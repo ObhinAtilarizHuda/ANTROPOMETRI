@@ -89,12 +89,13 @@ Byte setelah `CMD` adalah reserved dan harus `0x00`.
 **Response (Slave → Master):**
 
 ```
-D5 AA 09 89 06 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [CRC_H] [CRC_L]
+D5 AA 0A 89 06 00 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [CRC_H] [CRC_L]
 ```
 
 | Field | Ukuran | Keterangan |
 |-------|--------|------------|
-| Length | 1 byte | `0x09` (9 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle) |
+| Length | 1 byte | `0x0A` (10 bytes: REQ+ADDR+CMD+reserved+3 byte dist+3 byte angle) |
+| Reserved | 1 byte | `0x00` — fixed, setelah CMD sebelum data |
 | DIST | 3 byte | Jarak/panjang (`cm × 100`) — 24-bit signed integer big-endian |
 | ANGLE | 3 byte | Sudut adjust (`deg × 100`) — 24-bit signed integer big-endian |
 
@@ -162,13 +163,14 @@ D5 AA 04 88 06 00 00 A6 BD
 Slave menjawab:
 
 ```
-D5 AA 09 89 06 00 00 03 3C 00 55 F9 BB 65
+D5 AA 0A 89 06 00 00 00 03 3C 00 55 F9 [CRC_H] [CRC_L]
 ```
 
 Isi response:
 
 | Field | Hex | Decimal | Arti |
 |-------|-----|---------|------|
+| Reserved | `00` | — | byte reserved setelah CMD |
 | DIST | `00 03 3C` | 828 | 8.28 cm |
 | ANGLE | `00 55 F9` | 22009 | 220.09° (angle adjust) |
 
@@ -309,7 +311,7 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 **Urutan pengujian normal:**
 
 1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 05 89 06 02 00 02 61 7A`
-2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply 6 byte: 3 byte jarak (`cm × 100`) + 3 byte angle adjust (`deg × 100`)
+2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply: `00` reserved + 3 byte jarak (`cm × 100`) + 3 byte angle adjust (`deg × 100`)
 3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 05 89 06 02 00 03 A1 BB`
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot
