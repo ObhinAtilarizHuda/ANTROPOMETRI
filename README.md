@@ -42,11 +42,11 @@ src/
 
 ## Status Saat Ini
 
-Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat, lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp).
+Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **dua nilai**: jarak (`cm × 100`) dan sudut adjust (`deg × 100`).
 
 | CMD | Handler | Keterangan |
 |-----|---------|-------------|
-| `0x00` Measurement | `handleMeasurement()` | Panjang aktual dari AS5600 |
+| `0x00` Measurement | `handleMeasurement()` | Jarak (cm×100) + angle adjust (deg×100) dari AS5600 |
 | `0x02` Control | `handleMode()` | (action langsung; ACK tetap dikirim) |
 
 ---
@@ -89,22 +89,28 @@ Byte setelah `CMD` adalah reserved dan harus `0x00`.
 **Response (Slave → Master):**
 
 ```
-D5 AA 06 89 06 00 [DIST_H DIST_M DIST_L] [CRC_H] [CRC_L]
+D5 AA 09 89 06 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [CRC_H] [CRC_L]
 ```
 
 | Field | Ukuran | Keterangan |
 |-------|--------|------------|
-| Length | 1 byte | `0x06` (6 bytes: REQ+ADDR+CMD+3 byte data) |
+| Length | 1 byte | `0x09` (9 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle) |
 | DIST | 3 byte | Jarak/panjang (`cm × 100`) — 24-bit signed integer big-endian |
+| ANGLE | 3 byte | Sudut adjust (`deg × 100`) — 24-bit signed integer big-endian |
 
 **Decoding di sisi master:**
 
 ```c
-int32_t length_cm_x100 = (int32_t)((DIST_H << 16) | (DIST_M << 8) | DIST_L);
-float   length_cm      = length_cm_x100 / 100.0f;
+int32_t length_cm_x100  = (int32_t)((DIST_H  << 16) | (DIST_M  << 8) | DIST_L);
+float   length_cm       = length_cm_x100 / 100.0f;
+
+int32_t angle_deg_x100  = (int32_t)((ANGLE_H << 16) | (ANGLE_M << 8) | ANGLE_L);
+float   angle_deg       = angle_deg_x100 / 100.0f;
 ```
 
 Contoh: panjang = 8.28 cm → encoded = 828 (`0x00033C`) → bytes = `00 03 3C`
+
+Contoh: angle adjust = 220.09° → encoded = 22009 (`0x0055F9`) → bytes = `00 55 F9`
 
 **Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
 
@@ -154,7 +160,7 @@ D5 AA 04 88 06 00 00 A6 BD
 Slave menjawab:
 
 ```
-D5 AA 06 89 06 00 00 03 3C DA D3
+D5 AA 09 89 06 00 00 03 3C 00 55 F9 BB 65
 ```
 
 Isi response:
@@ -162,6 +168,7 @@ Isi response:
 | Field | Hex | Decimal | Arti |
 |-------|-----|---------|------|
 | DIST | `00 03 3C` | 828 | 8.28 cm |
+| ANGLE | `00 55 F9` | 22009 | 220.09° (angle adjust) |
 
 ### Standby
 
@@ -300,7 +307,7 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 **Urutan pengujian normal:**
 
 1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 04 89 06 02 02 FB 3C`
-2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply jarak 3 byte (`cm × 100`)
+2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply 6 byte: 3 byte jarak (`cm × 100`) + 3 byte angle adjust (`deg × 100`)
 3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 04 89 06 02 03 3B FD`
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 04 89 06 02 01 FA 7C`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 04 89 06 02 04 F9 BC`, lalu reboot
