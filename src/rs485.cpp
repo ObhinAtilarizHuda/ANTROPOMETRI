@@ -5,8 +5,8 @@ HardwareSerial RS485Serial(1);
 
 // Feedback packet headers (device ID = 0x06)
 // Format: D5 AA [length] 89 06 [cmdType] [data...] CRC
-uint8_t HdrMeasure[6]      = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x00};
-uint8_t HdrMeasureMulti[6] = {0xD5, 0xAA, 0x12, 0x89, 0x01, 0x00};   // LEN=0x12 (18) = SRC+DST+CMD + 15 byte data
+// Reply single measure: D5 AA 12 89 01 00 + 15 byte data + CRC
+uint8_t HdrMeasure[6]   = {0xD5, 0xAA, 0x12, 0x89, 0x01, 0x00};
 uint8_t HdrStandby[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x01};
 uint8_t HdrOperation[8] = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x02};
 uint8_t HdrTare[8]      = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x03};
@@ -141,7 +141,14 @@ void read485() {
 
   Serial.printf("[DEBUG] Header OK, length=%d, idx=%d\n", length, idx);
 
-  if (idx < startIndex + 3 + length + 2) {
+  // Master 0x88 mengirim 1 byte data1 (=0x00) yang TIDAK dihitung dalam LEN
+  // Template master: D5 AA 03 88 01 00 00 [CRC_H] [CRC_L]
+  uint8_t extraPayload = 0;
+  if (idx >= startIndex + 4 && buf[startIndex+3] == 0x88) {
+    extraPayload = 1;
+  }
+
+  if (idx < startIndex + 3 + length + extraPayload + 2) {
     Serial.println("paket tidak sesuai length");
     debugPrintBuf();
     return;
@@ -156,10 +163,14 @@ void read485() {
     data2 = buf[startIndex+7];
     Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, data1=0x%02X, data2=0x%02X\n",
                   source, targetID, cmdType, data1, data2);
+  } else if (source == 0x88 && cmdType == 0x00) {
+    data1 = buf[startIndex+6];
+    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, data1=0x%02X (single measure)\n",
+                  source, targetID, cmdType, data1);
   }
 
-  crcHigh = buf[startIndex + 3 + length];
-  crcLow  = buf[startIndex + 3 + length + 1];
+  crcHigh = buf[startIndex + 3 + length + extraPayload];
+  crcLow  = buf[startIndex + 3 + length + extraPayload + 1];
 
   Serial.print("Header1  : 0x"); Serial.println(header,   HEX);
   Serial.print("Header2  : 0x"); Serial.println(header2,  HEX);
@@ -170,7 +181,7 @@ void read485() {
   Serial.print("CRC High : 0x"); Serial.println(crcHigh,  HEX);
   Serial.print("CRC Low  : 0x"); Serial.println(crcLow,   HEX);
 
-  uint8_t  crcDataLen = 3 + length;
+  uint8_t  crcDataLen = 3 + length + extraPayload;
   uint16_t crcCalc    = crc16_modbus(&buf[startIndex], crcDataLen);
   uint16_t crcRX      = ((uint16_t)crcHigh << 8) | crcLow;
 

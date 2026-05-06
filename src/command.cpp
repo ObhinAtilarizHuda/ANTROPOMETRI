@@ -34,17 +34,9 @@ static void exitStandby() {
 
 // --- Feedback helpers ---
 
-static void feedbackMeasure(float distance) {
-  uint16_t distInt = (uint16_t)(distance * 10.0f + 0.5f);
-  uint8_t  distData[2];
-  pack16(distData, distInt);
-  sendRS485(HdrMeasure, sizeof(HdrMeasure), distData, sizeof(distData));
-  Serial.printf("[FB] Distance sent: %d (=%.1f cm)\n", distInt, distance);
-}
-
-// Reply 5 nilai (W, TL, TR, BL, BR), masing-masing × 100 dan dikemas 3 byte big-endian
+// Reply single measure: 5 nilai (W, TL, TR, BL, BR), masing-masing × 100, dikemas 3 byte big-endian
 // Format: D5 AA 12 89 01 00 [W_H W_M W_L] [TL_H TL_M TL_L] [TR_...] [BL_...] [BR_...] [CRC_H CRC_L]
-static void feedbackMeasureMulti(float w, float tl, float tr, float bl, float br) {
+static void feedbackMeasure(float w, float tl, float tr, float bl, float br) {
   uint32_t wInt  = (uint32_t)(w  * 100.0f + 0.5f);
   uint32_t tlInt = (uint32_t)(tl * 100.0f + 0.5f);
   uint32_t trInt = (uint32_t)(tr * 100.0f + 0.5f);
@@ -58,8 +50,8 @@ static void feedbackMeasureMulti(float w, float tl, float tr, float bl, float br
   pack24(&data[9],  blInt);
   pack24(&data[12], brInt);
 
-  sendRS485(HdrMeasureMulti, sizeof(HdrMeasureMulti), data, sizeof(data));
-  Serial.printf("[FB] Multi: W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
+  sendRS485(HdrMeasure, sizeof(HdrMeasure), data, sizeof(data));
+  Serial.printf("[FB] Measure: W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
 }
 
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
@@ -86,8 +78,8 @@ static void doRestart() {
 
 // --- Command handlers ---
 
-static void handleMulti() {
-  Serial.println("[MULTI] Membaca 5 nilai...");
+static void handleSingle() {
+  Serial.println("[SINGLE] Membaca 5 nilai...");
 
   // ===== DUMMY VALUES (komentari blok ini saat sensor I2C siap) =====
   float w  = 100.00f;   // Width
@@ -95,34 +87,12 @@ static void handleMulti() {
   float tr = 25.75f;    // Top Right
   float bl = 26.00f;    // Bottom Left
   float br = 26.25f;    // Bottom Right
-  Serial.printf("[MULTI][DUMMY] W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
-  feedbackMeasureMulti(w, tl, tr, bl, br);
+  Serial.printf("[SINGLE][DUMMY] W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
+  feedbackMeasure(w, tl, tr, bl, br);
   return;
   // ===== END DUMMY =====
 
-  // TODO: baca dari sensor I2C asli, lalu panggil feedbackMeasureMulti(...)
-}
-
-static void handleSingle() {
-  Serial.println("[SINGLE] Membaca jarak...");
-
-  // ===== DUMMY VALUE (komentari blok ini saat sensor I2C siap) =====
-  float distance = 123.4f;
-  Serial.printf("[SINGLE][DUMMY] dist=%.1f cm\n", distance);
-  feedbackMeasure(distance);
-  return;
-  // ===== END DUMMY =====
-
-  int32_t raw       = as5600.getCumulativePosition();
-  int32_t delta     = raw - startRaw;
-  float   degree    = delta * 360.0f / 4096.0f;
-  float   degreeAdj = degree + 0.44f;
-  float   distanceReal = getDistance(degreeAdj);
-
-  Serial.printf("[SINGLE] raw=%d, delta=%d, degAdj=%.2f, dist=%.1f cm\n",
-                raw, delta, degreeAdj, distanceReal);
-
-  feedbackMeasure(distanceReal);
+  // TODO: baca dari sensor I2C asli, lalu panggil feedbackMeasure(w, tl, tr, bl, br)
 }
 
 static void handleMode() {
@@ -160,9 +130,8 @@ static void handleMode() {
 void handleCmd() {
   switch (cmdType) {
     case 0x00:
-      if (state != Operation) { feedbackError(); break; }
-      if (targetID == 0x01) handleMulti();    // master baru (SRC=0x88, DST=0x01)
-      else                  handleSingle();   // master lama (SRC=0x03, DST=0x06)
+      if (state == Operation) handleSingle();
+      else                    feedbackError();
       break;
 
     case 0x02:

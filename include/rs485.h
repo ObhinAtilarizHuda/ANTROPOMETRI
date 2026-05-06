@@ -6,9 +6,8 @@
 // Shared serial instance
 extern HardwareSerial RS485Serial;
 
-// Packet headers: D5 AA [length] 89 06 [cmdType] ...
-extern uint8_t HdrMeasure[6];
-extern uint8_t HdrMeasureMulti[6];   // D5 AA 12 89 01 00 — reply 5 nilai (W,TL,TR,BL,BR) × 3 byte
+// Packet headers
+extern uint8_t HdrMeasure[6];   // D5 AA 12 89 01 00 — reply single measure (5 nilai: W,TL,TR,BL,BR × 3 byte)
 extern uint8_t HdrStandby[8];
 extern uint8_t HdrOperation[8];
 extern uint8_t HdrTare[8];
