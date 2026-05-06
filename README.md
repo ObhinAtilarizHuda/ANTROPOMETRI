@@ -13,15 +13,17 @@ Firmware untuk sensor jarak berbasis encoder magnetik AS5600, berkomunikasi deng
 | Komunikasi | RS485 half-duplex, 230400 baud |
 | Library | robtillaart/AS5600 v0.6.3 |
 
-**Pin Assignment (default ESP32dev):**
+**Pin Assignment:**
 
-| Fungsi | GPIO |
-|--------|------|
-| RS485 RX (RO) | 13 |
-| RS485 TX (DI) | 14 |
-| RS485 EN (DE+RE) | 27 |
-| I2C SDA | 8 |
-| I2C SCL | 9 |
+| Fungsi | ESP32dev | ESP32-C3 |
+|--------|----------|----------|
+| RS485 RX (RO) | GPIO 13 | GPIO 13 |
+| RS485 TX (DI) | GPIO 14 | GPIO 14 |
+| RS485 EN (DE+RE) | Auto (hardware) | Auto (hardware) |
+| I2C SDA | GPIO 21 | GPIO 8 |
+| I2C SCL | GPIO 22 | GPIO 9 |
+
+> `RS485_EN = -1` artinya arah RS485 ditangani otomatis oleh hardware (tidak perlu pin kontrol manual).
 
 ---
 
@@ -35,6 +37,12 @@ src/
 ├── encoder.cpp   — baca AS5600, kalkulasi jarak (piecewise-linear)
 └── command.cpp   — handler perintah: single, mode, tare, restart
 ```
+
+---
+
+## Status Saat Ini
+
+`handleSingle()` menggunakan **nilai dummy** sementara (`123.4 cm`) sambil menunggu integrasi sensor AS5600 via I2C selesai. Blok dummy ditandai dengan komentar `// ===== DUMMY VALUE =====` di `command.cpp` dan dapat dikomentari saat sensor sudah siap.
 
 ---
 
@@ -193,7 +201,7 @@ Fungsi `getDistance()` valid pada rentang **0.44° – 4356.74°** akumulatif (s
 
 ## Simulasi dengan Docklight
 
-File: `simulasiTesting/sim.ptp`
+File: `simulasiTesting/TestingSImulasi.ptp`
 
 **Setting port:**
 - Baud: 230400
@@ -202,7 +210,7 @@ File: `simulasiTesting/sim.ptp`
 
 **Urutan pengujian normal:**
 1. Kirim **Operation** → tunggu ACK `...00 02...`
-2. Kirim **Read Single** → terima respons jarak
+2. Kirim **Read Single** → terima respons jarak (saat ini dummy `123.4 cm`)
 3. Kirim **Tare** → kirim **Read Single** lagi → jarak kembali ke ~0
 4. Kirim **Standby** → kirim **Read Single** → encoder balas Error
 5. Kirim **Restart** → encoder reboot
@@ -212,16 +220,14 @@ File: `simulasiTesting/sim.ptp`
 ## Build & Flash
 
 ```bash
-# Build untuk ESP32dev
+# Build untuk ESP32dev (aktif)
 pio run -e esp32dev
 
-# Build & flash
+# Build & flash (upload port: COM22)
 pio run -e esp32dev --target upload
 
 # Monitor serial (115200)
 pio device monitor
-
-# Ganti board jika perlu
-pio run -e esp32c3
-pio run -e esp32s3
 ```
+
+> Environment `esp32c3` dan `esp32s3` tersedia di `platformio.ini` namun dikomentari — aktifkan sesuai board yang digunakan.
