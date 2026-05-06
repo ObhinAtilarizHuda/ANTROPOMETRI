@@ -4,8 +4,8 @@
 HardwareSerial RS485Serial(1);
 
 // Feedback packet headers — semua reply pakai REQ=0x89, ADDR=SLAVE_ADDRESS
-// Reply CMD 0x00 (measurement) — D5 AA 06 89 [ADDR] 00 + 3 byte distance + CRC
-uint8_t HdrMeasure[6]      = {0xD5, 0xAA, 0x06, 0x89, SLAVE_ADDRESS, 0x00};
+// Reply CMD 0x00 (measurement) — D5 AA 09 89 [ADDR] 00 + 3 byte distance + 3 byte angle + CRC
+uint8_t HdrMeasure[6]      = {0xD5, 0xAA, 0x09, 0x89, SLAVE_ADDRESS, 0x00};
 // Reply CMD 0x02 (control) — D5 AA 04 89 [ADDR] 02 [SUBCMD] + CRC
 uint8_t HdrStandby[7]      = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x01};
 uint8_t HdrOperation[7]    = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x02};

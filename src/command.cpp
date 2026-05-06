@@ -34,16 +34,19 @@ static void exitStandby() {
 
 // --- Feedback helpers ---
 
-// Reply CMD 0x00 (Measurement): jarak/panjang (cm × 100), 3 byte big-endian.
-// Format: D5 AA 06 89 [ADDR] 00 [DIST_H DIST_M DIST_L] [CRC_H CRC_L]
-static void feedbackMeasure(float lengthCm) {
+// Reply CMD 0x00 (Measurement): jarak (cm × 100) + angle (deg × 100), masing-masing 3 byte big-endian.
+// Format: D5 AA 09 89 [ADDR] 00 [DIST_H DIST_M DIST_L ANGLE_H ANGLE_M ANGLE_L] [CRC_H CRC_L]
+static void feedbackMeasure(float lengthCm, float angleDeg) {
   int32_t lengthInt = (int32_t)(lengthCm * 100.0f + (lengthCm >= 0 ? 0.5f : -0.5f));
+  int32_t angleInt  = (int32_t)(angleDeg  * 100.0f + (angleDeg  >= 0 ? 0.5f : -0.5f));
 
-  uint8_t data[3];
-  pack24(data, (uint32_t)lengthInt);
+  uint8_t data[6];
+  pack24(data,     (uint32_t)lengthInt);
+  pack24(data + 3, (uint32_t)angleInt);
 
   sendRS485(HdrMeasure, sizeof(HdrMeasure), data, sizeof(data));
-  Serial.printf("[FB] Measure: distance=%.2f cm, encoded=%d\n", lengthCm, lengthInt);
+  Serial.printf("[FB] Measure: distance=%.2f cm (enc=%d), angle=%.2f deg (enc=%d)\n",
+                lengthCm, lengthInt, angleDeg, angleInt);
 }
 
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
@@ -82,11 +85,12 @@ static void handleMeasurement() {
   int32_t rawPosition  = as5600.getCumulativePosition();
   int32_t deltaRaw     = rawPosition - startRaw;
   float   angleDeg     = (float)deltaRaw * 360.0f / 4096.0f;
-  float   lengthCm     = getDistance(angleDeg + 0.44f);
+  float   angleAdj     = angleDeg + 0.44f;
+  float   lengthCm     = getDistance(angleAdj);
 
-  Serial.printf("[CMD 0x00] L=%.2fcm raw=%d delta=%d angle=%.2fdeg\n",
-                lengthCm, rawPosition, deltaRaw, angleDeg);
-  feedbackMeasure(lengthCm);
+  Serial.printf("[CMD 0x00] L=%.2fcm raw=%d delta=%d angle=%.2fdeg angleAdj=%.2fdeg\n",
+                lengthCm, rawPosition, deltaRaw, angleDeg, angleAdj);
+  feedbackMeasure(lengthCm, angleAdj);
 }
 
 static void handleMode() {
