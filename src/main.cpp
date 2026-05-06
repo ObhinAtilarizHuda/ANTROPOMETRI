@@ -24,11 +24,11 @@ void loop() {
     packetReady = false;
     Serial.printf("[LOOP] targetID=0x%02X, source=0x%02X, cmdType=0x%02X\n", targetID, source, cmdType);
 
-    if (targetID == 0x06) {
+    if (targetID == 0x06 || targetID == 0x01) {
       Serial.println("[OK] targetID match, execute handleCmd");
       handleCmd();
     } else {
-      Serial.printf("[REJECT] targetID mismatch: expected 0x06, got 0x%02X\n", targetID);
+      Serial.printf("[REJECT] targetID mismatch: expected 0x06/0x01, got 0x%02X\n", targetID);
       resetBuff();
     }
   }

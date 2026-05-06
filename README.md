@@ -42,7 +42,12 @@ src/
 
 ## Status Saat Ini
 
-`handleSingle()` menggunakan **nilai dummy** sementara (`123.4 cm`) sambil menunggu integrasi sensor AS5600 via I2C selesai. Blok dummy ditandai dengan komentar `// ===== DUMMY VALUE =====` di `command.cpp` dan dapat dikomentari saat sensor sudah siap.
+`handleSingle()` dan `handleMulti()` menggunakan **nilai dummy** sementara sambil menunggu integrasi sensor AS5600 via I2C selesai. Blok dummy ditandai dengan komentar `// ===== DUMMY VALUE(S) =====` di `command.cpp` dan dapat dikomentari saat sensor sudah siap.
+
+| Handler | Nilai dummy |
+|---------|-------------|
+| `handleSingle()` | `distance = 123.4 cm` |
+| `handleMulti()` | `W=100.00`, `TL=25.50`, `TR=25.75`, `BL=26.00`, `BR=26.25` |
 
 ---
 
@@ -68,11 +73,12 @@ src/
 
 ### Alamat Perangkat
 
-| Perangkat | Alamat |
-|-----------|--------|
-| Mainboard (Master) | `0x03` |
-| Encoder ini (Slave) | `0x06` |
-| Encoder (sumber reply) | `0x89` |
+Encoder ini mendukung **dua skema alamat** (lama & baru) — slave akan merespons jika `targetID` cocok dengan salah satunya.
+
+| Skema | Master (SRC) | Slave (DST) | Sumber reply (SRC) | Catatan |
+|-------|--------------|-------------|--------------------|---------|
+| Lama (single-measure) | `0x03` | `0x06` | `0x89` | Reply 1 nilai jarak |
+| Baru (multi-measure) | `0x88` | `0x01` | `0x89` | Reply 5 nilai (W, TL, TR, BL, BR) |
 
 ---
 
@@ -90,6 +96,24 @@ D5 AA 03 03 06 00 22 F8
 | SRC | 03 | Master |
 | DST | 06 | Encoder |
 | CMD | 00 | Read single |
+
+**Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
+
+---
+
+### 1b. Read Multi (Baca 5 Nilai Sekaligus) — protokol baru
+
+```
+D5 AA 04 88 01 00 00 [CRC_H] [CRC_L]
+```
+
+| Byte | Nilai | Keterangan |
+|------|-------|------------|
+| LEN | 04 | 4 byte payload |
+| SRC | 88 | Master baru |
+| DST | 01 | Encoder (alamat baru) |
+| CMD | 00 | Read |
+| DATA1 | 00 | Reserved |
 
 **Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
 
@@ -162,6 +186,54 @@ Nilai jarak dikirim dalam satuan **0.1 cm** (integer 16-bit, big-endian).
 **Contoh:**
 - Jarak 10.0 cm → `0x0064` → `D5 AA 05 89 06 00 00 64 ...`
 - Jarak 100.0 cm → `0x03E8` → `D5 AA 05 89 06 00 03 E8 DE 5A`
+
+### Response Multi-Measure (5 nilai)
+
+```
+D5 AA 12 89 01 00 [W_H W_M W_L] [TL_H TL_M TL_L] [TR_H TR_M TR_L] [BL_H BL_M BL_L] [BR_H BR_M BR_L] [CRC_H] [CRC_L]
+```
+
+| Field | Ukuran | Keterangan |
+|-------|--------|------------|
+| LEN | 1 byte | `0x12` (18) = SRC + DST + CMD + 15 byte data |
+| SRC | 1 byte | `0x89` (encoder) |
+| DST | 1 byte | `0x01` (master baru) |
+| CMD | 1 byte | `0x00` |
+| W   | 3 byte | Width — big-endian, **× 100** |
+| TL  | 3 byte | Top Left  — big-endian, **× 100** |
+| TR  | 3 byte | Top Right — big-endian, **× 100** |
+| BL  | 3 byte | Bottom Left  — big-endian, **× 100** |
+| BR  | 3 byte | Bottom Right — big-endian, **× 100** |
+| CRC | 2 byte | CRC16-Modbus |
+
+**Encoding nilai:** float dikalikan 100 (untuk membuang floating point), lalu disimpan sebagai integer 24-bit big-endian.
+
+```
+nilai_float × 100 → uint32 → 3 byte [HIGH | MID | LOW]
+```
+
+**Contoh decoding di sisi master:**
+```
+byte = [0x00, 0x27, 0x10]
+raw  = (0x00 << 16) | (0x27 << 8) | 0x10 = 10000
+nilai = 10000 / 100.0 = 100.00
+```
+
+**Contoh paket lengkap (nilai dummy saat ini):**
+
+| Nilai | Float | × 100 | Hex (3 byte) |
+|-------|-------|-------|--------------|
+| W  | 100.00 | 10000 | `00 27 10` |
+| TL | 25.50  | 2550  | `00 09 F6` |
+| TR | 25.75  | 2575  | `00 0A 0F` |
+| BL | 26.00  | 2600  | `00 0A 28` |
+| BR | 26.25  | 2625  | `00 0A 41` |
+
+```
+D5 AA 12 89 01 00  00 27 10  00 09 F6  00 0A 0F  00 0A 28  00 0A 41  [CRCH] [CRCL]
+```
+
+Range nilai per field: `0` s/d `167772.15` (24-bit / 100).
 
 ---
 

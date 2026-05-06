@@ -42,6 +42,26 @@ static void feedbackMeasure(float distance) {
   Serial.printf("[FB] Distance sent: %d (=%.1f cm)\n", distInt, distance);
 }
 
+// Reply 5 nilai (W, TL, TR, BL, BR), masing-masing × 100 dan dikemas 3 byte big-endian
+// Format: D5 AA 12 89 01 00 [W_H W_M W_L] [TL_H TL_M TL_L] [TR_...] [BL_...] [BR_...] [CRC_H CRC_L]
+static void feedbackMeasureMulti(float w, float tl, float tr, float bl, float br) {
+  uint32_t wInt  = (uint32_t)(w  * 100.0f + 0.5f);
+  uint32_t tlInt = (uint32_t)(tl * 100.0f + 0.5f);
+  uint32_t trInt = (uint32_t)(tr * 100.0f + 0.5f);
+  uint32_t blInt = (uint32_t)(bl * 100.0f + 0.5f);
+  uint32_t brInt = (uint32_t)(br * 100.0f + 0.5f);
+
+  uint8_t data[15];
+  pack24(&data[0],  wInt);
+  pack24(&data[3],  tlInt);
+  pack24(&data[6],  trInt);
+  pack24(&data[9],  blInt);
+  pack24(&data[12], brInt);
+
+  sendRS485(HdrMeasureMulti, sizeof(HdrMeasureMulti), data, sizeof(data));
+  Serial.printf("[FB] Multi: W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
+}
+
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
 static void feedbackOperation() { sendRS485(HdrOperation, sizeof(HdrOperation), nullptr, 0); Serial.println("[FB] Operation ack"); }
 static void feedbackTare()      { sendRS485(HdrTare,      sizeof(HdrTare),      nullptr, 0); Serial.println("[FB] Tare ack"); }
@@ -65,6 +85,23 @@ static void doRestart() {
 }
 
 // --- Command handlers ---
+
+static void handleMulti() {
+  Serial.println("[MULTI] Membaca 5 nilai...");
+
+  // ===== DUMMY VALUES (komentari blok ini saat sensor I2C siap) =====
+  float w  = 100.00f;   // Width
+  float tl = 25.50f;    // Top Left
+  float tr = 25.75f;    // Top Right
+  float bl = 26.00f;    // Bottom Left
+  float br = 26.25f;    // Bottom Right
+  Serial.printf("[MULTI][DUMMY] W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
+  feedbackMeasureMulti(w, tl, tr, bl, br);
+  return;
+  // ===== END DUMMY =====
+
+  // TODO: baca dari sensor I2C asli, lalu panggil feedbackMeasureMulti(...)
+}
 
 static void handleSingle() {
   Serial.println("[SINGLE] Membaca jarak...");
@@ -123,8 +160,9 @@ static void handleMode() {
 void handleCmd() {
   switch (cmdType) {
     case 0x00:
-      if (state == Operation) handleSingle();
-      else                    feedbackError();
+      if (state != Operation) { feedbackError(); break; }
+      if (targetID == 0x01) handleMulti();    // master baru (SRC=0x88, DST=0x01)
+      else                  handleSingle();   // master lama (SRC=0x03, DST=0x06)
       break;
 
     case 0x02:
