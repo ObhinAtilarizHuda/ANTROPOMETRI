@@ -133,15 +133,17 @@ D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
 
 Untuk `CMD 0x02`, byte parameter setelah `CMD` diisi dengan `SUBCMD`.
 
-**Response (ACK):** `D5 AA 04 89 06 02 [SUBCMD echo] [CRC_H] [CRC_L]`
+**Response (ACK):** `D5 AA 05 89 06 02 00 [SUBCMD echo] [CRC_H] [CRC_L]`
+
+Byte `00` setelah CMD adalah reserved, lalu diikuti echo SUBCMD.
 
 | ACK | Frame |
 |-----|-------|
-| Standby | `D5 AA 04 89 06 02 01 [CRC]` |
-| Operation | `D5 AA 04 89 06 02 02 [CRC]` |
-| Tare | `D5 AA 04 89 06 02 03 [CRC]` |
-| Restart | `D5 AA 04 89 06 02 04 [CRC]` (sebelum reboot) |
-| Error | `D5 AA 04 89 06 02 0E [CRC]` |
+| Standby | `D5 AA 05 89 06 02 00 01 [CRC]` |
+| Operation | `D5 AA 05 89 06 02 00 02 [CRC]` |
+| Tare | `D5 AA 05 89 06 02 00 03 [CRC]` |
+| Restart | `D5 AA 05 89 06 02 00 04 [CRC]` (sebelum reboot) |
+| Error | `D5 AA 05 89 06 02 00 0E [CRC]` |
 
 ---
 
@@ -181,7 +183,7 @@ D5 AA 04 88 06 02 01 06 7D
 Slave menjawab:
 
 ```
-D5 AA 04 89 06 02 01 FA 7C
+D5 AA 05 89 06 02 00 01 60 3A
 ```
 
 ### Operation
@@ -195,7 +197,7 @@ D5 AA 04 88 06 02 02 07 3D
 Slave menjawab:
 
 ```
-D5 AA 04 89 06 02 02 FB 3C
+D5 AA 05 89 06 02 00 02 61 7A
 ```
 
 ### Tare
@@ -209,7 +211,7 @@ D5 AA 04 88 06 02 03 C7 FC
 Slave menjawab:
 
 ```
-D5 AA 04 89 06 02 03 3B FD
+D5 AA 05 89 06 02 00 03 A1 BB
 ```
 
 ### Restart
@@ -223,12 +225,12 @@ D5 AA 04 88 06 02 04 05 BD
 Slave menjawab sebelum reboot:
 
 ```
-D5 AA 04 89 06 02 04 F9 BC
+D5 AA 05 89 06 02 00 04 63 FA
 ```
 
 ### Error
 
-Contoh jika master mengirim subcontrol `0x02` yang tidak dikenal:
+Contoh jika master mengirim subcontrol yang tidak dikenal:
 
 ```
 D5 AA 04 88 06 02 FF 86 FC
@@ -237,7 +239,7 @@ D5 AA 04 88 06 02 FF 86 FC
 Slave menjawab error. Response yang sama juga dipakai jika Measurement dikirim saat state `Standby`:
 
 ```
-D5 AA 04 89 06 02 0E FE 3C
+D5 AA 05 89 06 02 00 0E 64 7A
 ```
 
 ---
@@ -306,8 +308,8 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 
 **Urutan pengujian normal:**
 
-1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 04 89 06 02 02 FB 3C`
+1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 05 89 06 02 00 02 61 7A`
 2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply 6 byte: 3 byte jarak (`cm × 100`) + 3 byte angle adjust (`deg × 100`)
-3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 04 89 06 02 03 3B FD`
-4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 04 89 06 02 01 FA 7C`
-5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 04 89 06 02 04 F9 BC`, lalu reboot
+3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 05 89 06 02 00 03 A1 BB`
+4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
+5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot
