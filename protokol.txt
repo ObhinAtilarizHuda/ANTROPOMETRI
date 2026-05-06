@@ -1,0 +1,85 @@
+Communication Protocol
+Overview
+Subsistem Magnetic Length Encoder menggunakan dua protokol komunikasi :
+- RS485 - Komunikasi dengan master device/PLC
+- Serial UART - Debug dan kalibrasi manual
+RS485 Protocol
+Frame Structure
+┌─────────┬─────────┬────────┬──────┬─────────┬─────────┬──────────┬─────────┐
+│ Header1 │ Header2 │ Length │ REQ  │ Address │ Command │   Data   │   CRC   │
+│  0xD5   │  0xAA   │ 1 byte │ 0x88 │  0x06   │ 1 byte  │ Variable │ 2 bytes │
+└─────────┴─────────┴────────┴──────┴─────────┴─────────┴──────────┴─────────┘
+Frame Components
+1. Header (2 bytes)
+0xD5 0xAA - Fixed header untuk identifikasi frame
+2. Length (1 byte)
+Panjang data dari REQ sampai sebelum CRC
+Length = 3 (REQ+ADDR+CMD) + Data_Length
+3. REQ (1 byte)
+0x88 - Request identifier
+0x89 - Response identifier
+4. Address (1 byte)
+0x06 - Slave address (default)
+Hanya frame dengan address 0x06 yang diproses
+5. Command (1 byte)
+0x00 - Length measurement request
+0x02 - Control commands
+6. Data (Variable)
+Tergantung command type
+7. CRC (2 bytes)
+Modbus CRC-16
+Polynomial: 0xA001
+Initial: 0xFFFF
+Big-endian format (MSB first)
+CRC-16 Modbus Calculation
+uint16_t crc16_modbus(const uint8_t *data, uint16_t len) {
+    uint16_t crc = 0xFFFF;
+    
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x0001)
+                crc = (crc >> 1) ^ 0xA001;
+            else
+                crc >>= 1;
+        }
+    }
+    return crc;
+}
+Command Set
+CMD 0x00: Length Measurement
+Request (Master to Slave)
+D5 AA 04 88 06 00 00 [CRC_H] [CRC_L]
+Fields:
+- Length: 0x04 (4 bytes: REQ+ADDR+CMD+reserved)
+- Command: 0x00
+- Reserved: 0x00
+Response (Slave to Master)
+D5 AA 06 89 06 00 [DIST_H][DIST_M][DIST_L] [CRC_H] [CRC_L]
+Fields:
+- Length : 0x06 (6 bytes: REQ+ADDR+CMD+3 byte data)
+- Measurement data : 1 × 3 bytes (24-bit signed integer)
+  - Distance/length (cm × 100)
+Data Format:
+int32_t length_cm_x100 = (int32_t)((DIST_H << 16) | (DIST_M << 8) | DIST_L);
+float length_cm = length_cm_x100 / 100.0f;
+Example:
+Length = 8.28 cm
+Encoded = 828 (0x033C)
+Bytes = [0x00, 0x03, 0x3C]
+CMD 0x02: Control Commands
+Request (Master to Slave)
+D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
+Fields:
+- Length: 0x04 (4 bytes: REQ+ADDR+CMD+SUBCMD)
+- Command: 0x02
+- SUBCMD: control subcommand
+SUBCMD      Command         Description
+0x01        Tare            Set current AS5600 position as zero point
+0x0A        Standby         Enter low power mode
+0x0B        Operation       Exit standby / ready
+0x0D        Restart         Reboot ESP32
+Response (Slave to Master)
+D5 AA 04 89 06 02 [SUBCMD echo] [CRC_H] [CRC_L]
+Error response:
+D5 AA 04 89 06 02 0E [CRC_H] [CRC_L]

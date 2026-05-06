@@ -1,6 +1,8 @@
-# Magnetic Encoder RS485 — Firmware V0.1
+# Magnetic Length Encoder RS485 — Firmware V0.1
 
-Firmware untuk sensor jarak berbasis encoder magnetik AS5600, berkomunikasi dengan Mainboard via RS485 half-duplex.
+Firmware pembaca panjang berbasis ESP32 + sensor magnetic encoder AS5600, berkomunikasi dengan master device/PLC via RS485.
+
+Implementasi mengikuti dokumen [`protokol.txt`](protokol.txt).
 
 ---
 
@@ -23,248 +25,252 @@ Firmware untuk sensor jarak berbasis encoder magnetik AS5600, berkomunikasi deng
 | I2C SDA | GPIO 21 | GPIO 8 |
 | I2C SCL | GPIO 22 | GPIO 9 |
 
-> `RS485_EN = -1` artinya arah RS485 ditangani otomatis oleh hardware (tidak perlu pin kontrol manual).
-
 ---
 
 ## Arsitektur Software
 
 ```
 src/
-├── main.cpp      — setup/loop: inisialisasi, dispatch paket masuk
-├── rs485.cpp     — driver RS485: read, send, parsing header, CRC check
-├── crc.cpp       — CRC16-Modbus
-├── encoder.cpp   — baca AS5600, kalkulasi jarak (piecewise-linear)
-└── command.cpp   — handler perintah: single, mode, tare, restart
+├── main.cpp      — setup/loop: inisialisasi, dispatch paket
+├── rs485.cpp     — driver RS485: read, send, parsing, CRC check
+├── crc.cpp       — CRC16-Modbus (poly 0xA001, init 0xFFFF)
+├── encoder.cpp   — baca AS5600, kalkulasi (sumber data sensor)
+└── command.cpp   — handler perintah: measurement dan control
 ```
 
 ---
 
 ## Status Saat Ini
 
-`handleSingle()` menggunakan **nilai dummy** sementara sambil menunggu integrasi sensor AS5600 via I2C selesai. Blok dummy ditandai dengan komentar `// ===== DUMMY VALUES =====` di `command.cpp` dan dapat dikomentari saat sensor sudah siap.
+Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat, lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp).
 
-| Field | Dummy |
-|-------|-------|
-| W (Width)        | `100.00` |
-| TL (Top Left)    | `25.50` |
-| TR (Top Right)   | `25.75` |
-| BL (Bottom Left) | `26.00` |
-| BR (Bottom Right)| `26.25` |
+| CMD | Handler | Keterangan |
+|-----|---------|-------------|
+| `0x00` Measurement | `handleMeasurement()` | Panjang aktual dari AS5600 |
+| `0x02` Control | `handleMode()` | (action langsung; ACK tetap dikirim) |
 
 ---
 
 ## Protokol RS485
 
-### Format Paket Umum
+### Frame Structure
 
 ```
-[D5] [AA] [LEN] [SRC] [DST] [CMD] [DATA...] [CRCH] [CRCL]
+┌─────────┬─────────┬────────┬──────┬─────────┬─────────┬──────────┬─────────┐
+│ Header1 │ Header2 │ Length │ REQ  │ Address │ Command │   Data   │   CRC   │
+│  0xD5   │  0xAA   │ 1 byte │ 0x88 │  0x06   │ 1 byte  │ Variable │ 2 bytes │
+└─────────┴─────────┴────────┴──────┴─────────┴─────────┴──────────┴─────────┘
 ```
 
 | Field | Ukuran | Keterangan |
 |-------|--------|------------|
-| D5 AA | 2 byte | Header tetap |
-| LEN | 1 byte | Jumlah byte payload (lihat catatan per-perintah) |
-| SRC | 1 byte | Alamat pengirim |
-| DST | 1 byte | Alamat tujuan |
-| CMD | 1 byte | Tipe perintah |
-| DATA | n byte | Data payload |
-| CRCH CRCL | 2 byte | CRC16-Modbus (big-endian) |
-
-**CRC16-Modbus** dihitung atas seluruh byte mulai `D5` sampai byte DATA terakhir (tidak termasuk CRC itu sendiri).
-
-### Alamat Perangkat
-
-| Peran | Single Measure (CMD 00) | Mode Control (CMD 02) |
-|-------|-------------------------|------------------------|
-| Master (SRC) | `0x88` | `0x03` |
-| Slave/Encoder (DST) | `0x01` | `0x06` |
-| Reply (SRC) | `0x89` | `0x89` |
+| Header | 2 byte | `0xD5 0xAA` — fixed |
+| Length | 1 byte | `Length = 3 (REQ+ADDR+CMD) + Data_Length` |
+| REQ | 1 byte | `0x88` = request (master → slave), `0x89` = response (slave → master) |
+| Address | 1 byte | `0x06` — slave address. Hanya frame dengan address `0x06` yang diproses |
+| Command | 1 byte | `0x00` measurement, `0x02` control |
+| Data | n byte | Tergantung command type |
+| CRC | 2 byte | Modbus CRC-16 (poly `0xA001`, init `0xFFFF`), big-endian (MSB first) |
 
 ---
 
-## Perintah Master → Encoder
+## Command Set
 
-### 1. Single Measure
+### CMD `0x00` — Length Measurement
 
-Master mengirim:
+**Request (Master → Slave):**
 
 ```
-D5 AA 03 88 01 00 00 [CRC_H] [CRC_L]
+D5 AA 04 88 06 00 00 [CRC_H] [CRC_L]
 ```
 
-| Byte | Nilai | Keterangan |
-|------|-------|------------|
-| LEN | `03` | Mengikuti template master |
-| SRC | `88` | Master |
-| DST | `01` | Encoder |
-| CMD | `00` | Single measure |
-| DATA1 | `00` | Reserved |
+Byte setelah `CMD` adalah reserved dan harus `0x00`.
 
-> **Catatan parser:** Pada template ini LEN=03 tapi byte payload sebenarnya 4 (`88 01 00 00`). Parser sudah disesuaikan untuk mengenali `SRC=0x88` dan menambahkan 1 byte payload tambahan, sehingga CRC dihitung atas 7 byte (`D5 AA 03 88 01 00 00`).
+**Response (Slave → Master):**
+
+```
+D5 AA 06 89 06 00 [DIST_H DIST_M DIST_L] [CRC_H] [CRC_L]
+```
+
+| Field | Ukuran | Keterangan |
+|-------|--------|------------|
+| Length | 1 byte | `0x06` (6 bytes: REQ+ADDR+CMD+3 byte data) |
+| DIST | 3 byte | Jarak/panjang (`cm × 100`) — 24-bit signed integer big-endian |
+
+**Decoding di sisi master:**
+
+```c
+int32_t length_cm_x100 = (int32_t)((DIST_H << 16) | (DIST_M << 8) | DIST_L);
+float   length_cm      = length_cm_x100 / 100.0f;
+```
+
+Contoh: panjang = 8.28 cm → encoded = 828 (`0x00033C`) → bytes = `00 03 3C`
 
 **Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
 
 ---
 
-### 2. Set Mode Standby
+### CMD `0x02` — Control Commands
+
+**Request (Master → Slave):**
 
 ```
-D5 AA 05 03 06 02 01 00 EF 63
+D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
 ```
 
-| Byte | Nilai | Keterangan |
-|------|-------|------------|
-| CMD | `02` | Mode control |
-| DATA1 | `01` | Standby |
-| DATA2 | `00` | - |
+| SUBCMD | Command | Description |
+|--------|---------|-------------|
+| `0x01` | Tare | Set posisi AS5600 saat ini sebagai titik nol |
+| `0x0A` | Standby | Enter low power mode (WiFi/BT off, CPU 80MHz) |
+| `0x0B` | Operation | Exit standby / ready |
+| `0x0D` | Restart | Reboot ESP32 |
+
+Untuk `CMD 0x02`, byte parameter setelah `CMD` diisi dengan `SUBCMD`.
+
+**Response (ACK):** `D5 AA 04 89 06 02 [SUBCMD echo] [CRC_H] [CRC_L]`
+
+| ACK | Frame |
+|-----|-------|
+| Tare | `D5 AA 04 89 06 02 01 [CRC]` |
+| Standby | `D5 AA 04 89 06 02 0A [CRC]` |
+| Operation | `D5 AA 04 89 06 02 0B [CRC]` |
+| Restart | `D5 AA 04 89 06 02 0D [CRC]` (sebelum reboot) |
+| Error | `D5 AA 04 89 06 02 0E [CRC]` |
 
 ---
 
-### 3. Set Mode Operation
+## Contoh Frame Lengkap
+
+CRC ditulis big-endian sebagai `[CRC_H] [CRC_L]`. Nilai measurement bergantung posisi AS5600. Contoh di bawah memakai skenario jarak/panjang = 8.28 cm.
+
+### Measurement
+
+Master mengirim:
 
 ```
-D5 AA 05 03 06 02 02 00 1F 63
+D5 AA 04 88 06 00 00 A6 BD
 ```
 
-| DATA1 | `02` | Operation |
+Slave menjawab:
+
+```
+D5 AA 06 89 06 00 00 03 3C DA D3
+```
+
+Isi response:
+
+| Field | Hex | Decimal | Arti |
+|-------|-----|---------|------|
+| DIST | `00 03 3C` | 828 | 8.28 cm |
+
+### Tare
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 01 06 7D
+```
+
+Slave menjawab:
+
+```
+D5 AA 04 89 06 02 01 FA 7C
+```
+
+### Standby
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 0A C1 3C
+```
+
+Slave menjawab:
+
+```
+D5 AA 04 89 06 02 0A 3D 3D
+```
+
+### Operation
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 0B 01 FD
+```
+
+Slave menjawab:
+
+```
+D5 AA 04 89 06 02 0B FD FC
+```
+
+### Restart
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 0D 03 7D
+```
+
+Slave menjawab sebelum reboot:
+
+```
+D5 AA 04 89 06 02 0D FF 7C
+```
+
+### Error
+
+Contoh jika master mengirim subcontrol `0x02` yang tidak dikenal:
+
+```
+D5 AA 04 88 06 02 FF 86 FC
+```
+
+Slave menjawab error. Response yang sama juga dipakai jika Measurement dikirim saat state `Standby`:
+
+```
+D5 AA 04 89 06 02 0E FE 3C
+```
 
 ---
 
-### 4. Tare (Reset Titik Nol)
+## CRC-16 Modbus
 
-```
-D5 AA 05 03 06 02 03 00 8F 62
-```
-
-| DATA1 | `03` | Tare — set posisi encoder saat ini sebagai nol |
-
----
-
-### 5. Restart
-
-```
-D5 AA 05 03 06 02 04 00 BF 60
-```
-
-| DATA1 | `04` | Restart — encoder reboot via ESP.restart() |
-
----
-
-## Respons Encoder → Master
-
-### Response Single Measure
-
-```
-D5 AA 12 89 01 00 [W_H W_M W_L] [TL_H TL_M TL_L] [TR_H TR_M TR_L] [BL_H BL_M BL_L] [BR_H BR_M BR_L] [CRC_H] [CRC_L]
+```c
+uint16_t crc16_modbus(const uint8_t *data, uint16_t len) {
+    uint16_t crc = 0xFFFF;
+    for (uint16_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+            else              crc >>= 1;
+        }
+    }
+    return crc;
+}
 ```
 
-| Field | Ukuran | Keterangan |
-|-------|--------|------------|
-| LEN | 1 byte | `0x12` (18) = SRC + DST + CMD + 15 byte data |
-| SRC | 1 byte | `0x89` (encoder) |
-| DST | 1 byte | `0x01` (master) |
-| CMD | 1 byte | `0x00` |
-| W   | 3 byte | Width — big-endian, **× 100** |
-| TL  | 3 byte | Top Left — big-endian, **× 100** |
-| TR  | 3 byte | Top Right — big-endian, **× 100** |
-| BL  | 3 byte | Bottom Left — big-endian, **× 100** |
-| BR  | 3 byte | Bottom Right — big-endian, **× 100** |
-| CRC | 2 byte | CRC16-Modbus |
-
-**Encoding nilai:** float dikalikan 100 (membuang floating point), lalu disimpan sebagai integer 24-bit big-endian.
-
-```
-nilai_float × 100 → uint32 → 3 byte [HIGH | MID | LOW]
-```
-
-**Contoh decoding di sisi master:**
-```
-byte = [0x00, 0x27, 0x10]
-raw  = (0x00 << 16) | (0x27 << 8) | 0x10 = 10000
-nilai = 10000 / 100.0 = 100.00
-```
-
-**Contoh paket lengkap (nilai dummy saat ini):**
-
-| Field | Float | × 100 | Hex (3 byte) |
-|-------|-------|-------|--------------|
-| W  | 100.00 | 10000 | `00 27 10` |
-| TL | 25.50  |  2550 | `00 09 F6` |
-| TR | 25.75  |  2575 | `00 0A 0F` |
-| BL | 26.00  |  2600 | `00 0A 28` |
-| BR | 26.25  |  2625 | `00 0A 41` |
-
-```
-D5 AA 12 89 01 00  00 27 10  00 09 F6  00 0A 0F  00 0A 28  00 0A 41  [CRCH] [CRCL]
-```
-
-Range nilai per field: `0` s/d `167772.15` (24-bit / 100).
-
-### Response Mode (ACK)
-
-Format: `D5 AA 05 89 06 02 [DATA1] [DATA2] [CRCH] [CRCL]`
-
-| Response | Hex | Keterangan |
-|----------|-----|------------|
-| Standby ACK | `D5 AA 05 89 06 02 00 01 60 3A` | Konfirmasi mode Standby |
-| Operation ACK | `D5 AA 05 89 06 02 00 02 61 7A` | Konfirmasi mode Operation |
-| Tare ACK | `D5 AA 05 89 06 02 00 03 A1 BB` | Konfirmasi Tare |
-| Restart ACK | `D5 AA 05 89 06 02 00 04 63 FA` | Konfirmasi sebelum restart |
-| Error | `D5 AA 05 89 06 02 00 0E 64 7A` | Perintah tidak valid di state ini |
+Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output big-endian (MSB first di field CRC_H).
 
 ---
 
 ## State Machine
 
 ```
-         [Standby]  <──── CMD 02 data1=01
+         [Standby]  <──── CMD 02 data=0x0A
               │
-              │ CMD 02 data1=02
+              │ CMD 02 data=0x0B
               ▼
-         [Operation] ──── CMD 00 ──► Reply 5 nilai (W, TL, TR, BL, BR)
+         [Operation] ──── CMD 00 ──► Reply Measurement
               │
-              │ CMD 02 data1=03
+              │ CMD 02 data=0x01
               └──────────────────► Tare (tetap Operation)
 
-         CMD 02 data1=04 ──► Restart (dari state apapun)
+         CMD 02 data=0x0D ──► Restart (dari state apapun)
 ```
 
 State awal saat boot: **Operation**.
-
----
-
-## Kalkulasi (Sumber Data Sensor)
-
-Data 5 nilai (W, TL, TR, BL, BR) berasal dari sensor AS5600 via I2C — saat ini masih dummy. Skema baca dasar (untuk satu nilai jarak) menggunakan rotasi kumulatif encoder dengan regresi piecewise-linear yang dikalibrasi dari data pengukuran fisik:
-
-```
-delta    = posisi_kumulatif - posisi_saat_tare
-derajat  = delta × (360 / 4096)
-degAdj   = derajat + 0.44°   (offset kalibrasi)
-jarak    = getDistance(degAdj)   [cm]
-```
-
-Fungsi `getDistance()` valid pada rentang **0.44° – 4356.74°** akumulatif (sekitar 12 putaran penuh).
-
----
-
-## Simulasi dengan Docklight
-
-File: `simulasiTesting/TestingSImulasi.ptp`
-
-**Setting port:**
-- Baud: 230400
-- Data: 8N1
-- Mode: RS485 half-duplex
-
-**Urutan pengujian normal:**
-1. Kirim **Operation** → tunggu ACK `...00 02...`
-2. Kirim **Single Measure** (`D5 AA 03 88 01 00 00 ...`) → terima reply 5 nilai (saat ini dummy)
-3. Kirim **Tare** → kirim **Single Measure** lagi → nilai jarak kembali ke ~0 (setelah sensor terintegrasi)
-4. Kirim **Standby** → kirim **Single Measure** → encoder balas Error
-5. Kirim **Restart** → encoder reboot
 
 ---
 
@@ -281,4 +287,20 @@ pio run -e esp32dev --target upload
 pio device monitor
 ```
 
-> Environment `esp32c3` dan `esp32s3` tersedia di `platformio.ini` namun dikomentari — aktifkan sesuai board yang digunakan.
+> Environment `esp32c3` dan `esp32s3` tersedia di [`platformio.ini`](platformio.ini) namun dikomentari — aktifkan sesuai board yang digunakan.
+
+---
+
+## Simulasi dengan Docklight
+
+File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSImulasi.ptp)
+
+**Setting port:** Baud 230400, 8N1, RS485 half-duplex.
+
+**Urutan pengujian normal:**
+
+1. Kirim **Operation** (`D5 AA 04 88 06 02 0B 01 FD`) → ACK `D5 AA 04 89 06 02 0B FD FC`
+2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply jarak 3 byte (`cm × 100`)
+3. Kirim **Tare** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 04 89 06 02 01 FA 7C`
+4. Kirim **Standby** (`D5 AA 04 88 06 02 0A C1 3C`) → ACK `D5 AA 04 89 06 02 0A 3D 3D`
+5. Kirim **Restart** (`D5 AA 04 88 06 02 0D 03 7D`) → ACK `D5 AA 04 89 06 02 0D FF 7C`, lalu reboot

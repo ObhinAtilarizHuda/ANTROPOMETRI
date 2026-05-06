@@ -34,24 +34,16 @@ static void exitStandby() {
 
 // --- Feedback helpers ---
 
-// Reply single measure: 5 nilai (W, TL, TR, BL, BR), masing-masing × 100, dikemas 3 byte big-endian
-// Format: D5 AA 12 89 01 00 [W_H W_M W_L] [TL_H TL_M TL_L] [TR_...] [BL_...] [BR_...] [CRC_H CRC_L]
-static void feedbackMeasure(float w, float tl, float tr, float bl, float br) {
-  uint32_t wInt  = (uint32_t)(w  * 100.0f + 0.5f);
-  uint32_t tlInt = (uint32_t)(tl * 100.0f + 0.5f);
-  uint32_t trInt = (uint32_t)(tr * 100.0f + 0.5f);
-  uint32_t blInt = (uint32_t)(bl * 100.0f + 0.5f);
-  uint32_t brInt = (uint32_t)(br * 100.0f + 0.5f);
+// Reply CMD 0x00 (Measurement): jarak/panjang (cm × 100), 3 byte big-endian.
+// Format: D5 AA 06 89 [ADDR] 00 [DIST_H DIST_M DIST_L] [CRC_H CRC_L]
+static void feedbackMeasure(float lengthCm) {
+  int32_t lengthInt = (int32_t)(lengthCm * 100.0f + (lengthCm >= 0 ? 0.5f : -0.5f));
 
-  uint8_t data[15];
-  pack24(&data[0],  wInt);
-  pack24(&data[3],  tlInt);
-  pack24(&data[6],  trInt);
-  pack24(&data[9],  blInt);
-  pack24(&data[12], brInt);
+  uint8_t data[3];
+  pack24(data, (uint32_t)lengthInt);
 
   sendRS485(HdrMeasure, sizeof(HdrMeasure), data, sizeof(data));
-  Serial.printf("[FB] Measure: W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
+  Serial.printf("[FB] Measure: distance=%.2f cm, encoded=%d\n", lengthCm, lengthInt);
 }
 
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
@@ -78,68 +70,72 @@ static void doRestart() {
 
 // --- Command handlers ---
 
-static void handleSingle() {
-  Serial.println("[SINGLE] Membaca 5 nilai...");
+static void handleMeasurement() {
+  Serial.println("[CMD 0x00] Length measurement request");
 
-  // ===== DUMMY VALUES (komentari blok ini saat sensor I2C siap) =====
-  float w  = 100.00f;   // Width
-  float tl = 25.50f;    // Top Left
-  float tr = 25.75f;    // Top Right
-  float bl = 26.00f;    // Bottom Left
-  float br = 26.25f;    // Bottom Right
-  Serial.printf("[SINGLE][DUMMY] W=%.2f TL=%.2f TR=%.2f BL=%.2f BR=%.2f\n", w, tl, tr, bl, br);
-  feedbackMeasure(w, tl, tr, bl, br);
-  return;
-  // ===== END DUMMY =====
+  if (data1 != 0x00) {
+    Serial.printf("reserved measurement tidak valid: 0x%02X\n", data1);
+    feedbackError();
+    return;
+  }
 
-  // TODO: baca dari sensor I2C asli, lalu panggil feedbackMeasure(w, tl, tr, bl, br)
+  int32_t rawPosition  = as5600.getCumulativePosition();
+  int32_t deltaRaw     = rawPosition - startRaw;
+  float   angleDeg     = (float)deltaRaw * 360.0f / 4096.0f;
+  float   lengthCm     = getDistance(angleDeg + 0.44f);
+
+  Serial.printf("[CMD 0x00] L=%.2fcm raw=%d delta=%d angle=%.2fdeg\n",
+                lengthCm, rawPosition, deltaRaw, angleDeg);
+  feedbackMeasure(lengthCm);
 }
 
 static void handleMode() {
   switch (data1) {
-    case 0x01:
-      Serial.println("Standby Mode");
-      feedbackStandby();
-      doStandby();
-      break;
-
-    case 0x02:
-      Serial.println("Operation Mode");
-      doOperation();
-      feedbackOperation();
-      break;
-
-    case 0x03:
+    case 0x01:    // Tare
       Serial.println("Tare");
       doTare();
       feedbackTare();
       break;
 
-    case 0x04:
+    case 0x0A:    // Standby
+      Serial.println("Standby Mode");
+      feedbackStandby();
+      doStandby();
+      break;
+
+    case 0x0B:    // Operation
+      Serial.println("Operation Mode");
+      doOperation();
+      feedbackOperation();
+      break;
+
+    case 0x0D:    // Restart
       Serial.println("Device Restart");
       feedbackRestart();
       doRestart();
       break;
 
     default:
-      Serial.println("data1 tidak dikenal");
+      Serial.printf("data1 tidak dikenal: 0x%02X\n", data1);
+      feedbackError();
       break;
   }
 }
 
 void handleCmd() {
   switch (cmdType) {
-    case 0x00:
-      if (state == Operation) handleSingle();
+    case 0x00:    // Measurement
+      if (state == Operation) handleMeasurement();
       else                    feedbackError();
       break;
 
-    case 0x02:
+    case 0x02:    // Control
       handleMode();
       break;
 
     default:
-      Serial.println("cmdType tidak dikenal");
+      Serial.printf("cmdType tidak dikenal: 0x%02X\n", cmdType);
+      feedbackError();
       break;
   }
   resetBuff();

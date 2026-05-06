@@ -6,6 +6,8 @@
 #define RS485_TX   14   // DI
 #define RS485_EN   -1   // -1 = auto direction (hardware handle DE/RE), set GPIO pin for manual control
 
+#define SLAVE_ADDRESS 0x06
+
 // I2C pins — auto-selected by target chip
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
   #define SDA_PIN  8

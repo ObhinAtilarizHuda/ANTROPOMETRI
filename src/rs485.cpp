@@ -3,15 +3,15 @@
 
 HardwareSerial RS485Serial(1);
 
-// Feedback packet headers (device ID = 0x06)
-// Format: D5 AA [length] 89 06 [cmdType] [data...] CRC
-// Reply single measure: D5 AA 12 89 01 00 + 15 byte data + CRC
-uint8_t HdrMeasure[6]   = {0xD5, 0xAA, 0x12, 0x89, 0x01, 0x00};
-uint8_t HdrStandby[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x01};
-uint8_t HdrOperation[8] = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x02};
-uint8_t HdrTare[8]      = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x03};
-uint8_t HdrRestart[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x04};
-uint8_t HdrFbError[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x0E};
+// Feedback packet headers — semua reply pakai REQ=0x89, ADDR=SLAVE_ADDRESS
+// Reply CMD 0x00 (measurement) — D5 AA 06 89 [ADDR] 00 + 3 byte distance + CRC
+uint8_t HdrMeasure[6]      = {0xD5, 0xAA, 0x06, 0x89, SLAVE_ADDRESS, 0x00};
+// Reply CMD 0x02 (control) — D5 AA 04 89 [ADDR] 02 [SUBCMD] + CRC
+uint8_t HdrTare[7]         = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x01};
+uint8_t HdrStandby[7]      = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x0A};
+uint8_t HdrOperation[7]    = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x0B};
+uint8_t HdrRestart[7]      = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x0D};
+uint8_t HdrFbError[7]      = {0xD5, 0xAA, 0x04, 0x89, SLAVE_ADDRESS, 0x02, 0x0E};
 
 uint8_t buf[MAX_PACKET];
 uint8_t idx        = 0;
@@ -141,11 +141,33 @@ void read485() {
 
   Serial.printf("[DEBUG] Header OK, length=%d, idx=%d\n", length, idx);
 
-  // Master 0x88 mengirim 1 byte data1 (=0x00) yang TIDAK dihitung dalam LEN
-  // Template master: D5 AA 03 88 01 00 00 [CRC_H] [CRC_L]
+  // Tunggu sampai SRC, DST, CMD ikut tersedia untuk peek
+  if (idx < startIndex + 6) {
+    return;
+  }
+
+  source   = buf[startIndex+3];
+  targetID = buf[startIndex+4];
+  cmdType  = buf[startIndex+5];
+
+  if (source != 0x88) {
+    Serial.printf("[REJECT] unsupported source/REQ: 0x%02X\n", source);
+    resetBuff();
+    return;
+  }
+
+  if (cmdType != 0x00 && cmdType != 0x02) {
+    Serial.printf("[REJECT] unsupported cmdType: 0x%02X\n", cmdType);
+    resetBuff();
+    return;
+  }
+
   uint8_t extraPayload = 0;
-  if (idx >= startIndex + 4 && buf[startIndex+3] == 0x88) {
-    extraPayload = 1;
+
+  if ((cmdType == 0x00 && length != 0x04) || (cmdType == 0x02 && length != 0x04)) {
+    Serial.printf("[REJECT] invalid length=%d for cmdType=0x%02X\n", length, cmdType);
+    resetBuff();
+    return;
   }
 
   if (idx < startIndex + 3 + length + extraPayload + 2) {
@@ -154,18 +176,15 @@ void read485() {
     return;
   }
 
-  source   = buf[startIndex+3];
-  targetID = buf[startIndex+4];
-  cmdType  = buf[startIndex+5];
-
-  if (cmdType == 0x02) {
+  if (cmdType == 0x00) {
     data1 = buf[startIndex+6];
-    data2 = buf[startIndex+7];
-    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, data1=0x%02X, data2=0x%02X\n",
-                  source, targetID, cmdType, data1, data2);
-  } else if (source == 0x88 && cmdType == 0x00) {
+    data2 = 0;
+    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, reserved=0x%02X\n",
+                  source, targetID, cmdType, data1);
+  } else if (cmdType == 0x02) {
     data1 = buf[startIndex+6];
-    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, data1=0x%02X (single measure)\n",
+    data2 = 0;
+    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, subcmd=0x%02X\n",
                   source, targetID, cmdType, data1);
   }
 
