@@ -91,25 +91,25 @@ static void handleMeasurement() {
 
 static void handleMode() {
   switch (data1) {
-    case 0x01:    // Tare
-      Serial.println("Tare");
-      doTare();
-      feedbackTare();
-      break;
-
-    case 0x0A:    // Standby
+    case 0x01:    // Standby
       Serial.println("Standby Mode");
       feedbackStandby();
       doStandby();
       break;
 
-    case 0x0B:    // Operation
+    case 0x02:    // Operation
       Serial.println("Operation Mode");
       doOperation();
       feedbackOperation();
       break;
 
-    case 0x0D:    // Restart
+    case 0x03:    // Tare
+      Serial.println("Tare");
+      doTare();
+      feedbackTare();
+      break;
+
+    case 0x04:    // Restart
       Serial.println("Device Restart");
       feedbackRestart();
       doRestart();

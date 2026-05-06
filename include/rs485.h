@@ -8,10 +8,10 @@ extern HardwareSerial RS485Serial;
 
 // Packet headers — semua reply pakai REQ=0x89, ADDR=SLAVE_ADDRESS
 extern uint8_t HdrMeasure[6];      // D5 AA 06 89 [ADDR] 00 — reply CMD 0x00 (distance × 100, 3 byte)
-extern uint8_t HdrStandby[7];      // D5 AA 04 89 [ADDR] 02 0A
-extern uint8_t HdrOperation[7];    // D5 AA 04 89 [ADDR] 02 0B
-extern uint8_t HdrTare[7];         // D5 AA 04 89 [ADDR] 02 01
-extern uint8_t HdrRestart[7];      // D5 AA 04 89 [ADDR] 02 0D
+extern uint8_t HdrStandby[7];      // D5 AA 04 89 [ADDR] 02 01
+extern uint8_t HdrOperation[7];    // D5 AA 04 89 [ADDR] 02 02
+extern uint8_t HdrTare[7];         // D5 AA 04 89 [ADDR] 02 03
+extern uint8_t HdrRestart[7];      // D5 AA 04 89 [ADDR] 02 04
 extern uint8_t HdrFbError[7];      // D5 AA 04 89 [ADDR] 02 0E
 
 // Receive buffer & parsed fields

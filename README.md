@@ -120,10 +120,10 @@ D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
 
 | SUBCMD | Command | Description |
 |--------|---------|-------------|
-| `0x01` | Tare | Set posisi AS5600 saat ini sebagai titik nol |
-| `0x0A` | Standby | Enter low power mode (WiFi/BT off, CPU 80MHz) |
-| `0x0B` | Operation | Exit standby / ready |
-| `0x0D` | Restart | Reboot ESP32 |
+| `0x01` | Standby | Enter low power mode (WiFi/BT off, CPU 80MHz) |
+| `0x02` | Operation | Exit standby / ready |
+| `0x03` | Tare | Set posisi AS5600 saat ini sebagai titik nol |
+| `0x04` | Restart | Reboot ESP32 |
 
 Untuk `CMD 0x02`, byte parameter setelah `CMD` diisi dengan `SUBCMD`.
 
@@ -131,10 +131,10 @@ Untuk `CMD 0x02`, byte parameter setelah `CMD` diisi dengan `SUBCMD`.
 
 | ACK | Frame |
 |-----|-------|
-| Tare | `D5 AA 04 89 06 02 01 [CRC]` |
-| Standby | `D5 AA 04 89 06 02 0A [CRC]` |
-| Operation | `D5 AA 04 89 06 02 0B [CRC]` |
-| Restart | `D5 AA 04 89 06 02 0D [CRC]` (sebelum reboot) |
+| Standby | `D5 AA 04 89 06 02 01 [CRC]` |
+| Operation | `D5 AA 04 89 06 02 02 [CRC]` |
+| Tare | `D5 AA 04 89 06 02 03 [CRC]` |
+| Restart | `D5 AA 04 89 06 02 04 [CRC]` (sebelum reboot) |
 | Error | `D5 AA 04 89 06 02 0E [CRC]` |
 
 ---
@@ -163,7 +163,7 @@ Isi response:
 |-------|-----|---------|------|
 | DIST | `00 03 3C` | 828 | 8.28 cm |
 
-### Tare
+### Standby
 
 Master mengirim:
 
@@ -177,32 +177,32 @@ Slave menjawab:
 D5 AA 04 89 06 02 01 FA 7C
 ```
 
-### Standby
-
-Master mengirim:
-
-```
-D5 AA 04 88 06 02 0A C1 3C
-```
-
-Slave menjawab:
-
-```
-D5 AA 04 89 06 02 0A 3D 3D
-```
-
 ### Operation
 
 Master mengirim:
 
 ```
-D5 AA 04 88 06 02 0B 01 FD
+D5 AA 04 88 06 02 02 07 3D
 ```
 
 Slave menjawab:
 
 ```
-D5 AA 04 89 06 02 0B FD FC
+D5 AA 04 89 06 02 02 FB 3C
+```
+
+### Tare
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 03 C7 FC
+```
+
+Slave menjawab:
+
+```
+D5 AA 04 89 06 02 03 3B FD
 ```
 
 ### Restart
@@ -210,13 +210,13 @@ D5 AA 04 89 06 02 0B FD FC
 Master mengirim:
 
 ```
-D5 AA 04 88 06 02 0D 03 7D
+D5 AA 04 88 06 02 04 05 BD
 ```
 
 Slave menjawab sebelum reboot:
 
 ```
-D5 AA 04 89 06 02 0D FF 7C
+D5 AA 04 89 06 02 04 F9 BC
 ```
 
 ### Error
@@ -258,16 +258,16 @@ Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output b
 ## State Machine
 
 ```
-         [Standby]  <──── CMD 02 data=0x0A
+         [Standby]  <──── CMD 02 data=0x01
               │
-              │ CMD 02 data=0x0B
+              │ CMD 02 data=0x02
               ▼
          [Operation] ──── CMD 00 ──► Reply Measurement
               │
-              │ CMD 02 data=0x01
+              │ CMD 02 data=0x03
               └──────────────────► Tare (tetap Operation)
 
-         CMD 02 data=0x0D ──► Restart (dari state apapun)
+         CMD 02 data=0x04 ──► Restart (dari state apapun)
 ```
 
 State awal saat boot: **Operation**.
@@ -299,8 +299,8 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 
 **Urutan pengujian normal:**
 
-1. Kirim **Operation** (`D5 AA 04 88 06 02 0B 01 FD`) → ACK `D5 AA 04 89 06 02 0B FD FC`
+1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 04 89 06 02 02 FB 3C`
 2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply jarak 3 byte (`cm × 100`)
-3. Kirim **Tare** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 04 89 06 02 01 FA 7C`
-4. Kirim **Standby** (`D5 AA 04 88 06 02 0A C1 3C`) → ACK `D5 AA 04 89 06 02 0A 3D 3D`
-5. Kirim **Restart** (`D5 AA 04 88 06 02 0D 03 7D`) → ACK `D5 AA 04 89 06 02 0D FF 7C`, lalu reboot
+3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 04 89 06 02 03 3B FD`
+4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 04 89 06 02 01 FA 7C`
+5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 04 89 06 02 04 F9 BC`, lalu reboot
