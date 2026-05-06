@@ -1,0 +1,180 @@
+#include "rs485.h"
+#include "crc.h"
+
+HardwareSerial RS485Serial(1);
+
+// Feedback packet headers (device ID = 0x06)
+// Format: D5 AA [length] 89 06 [cmdType] [data...] CRC
+uint8_t HdrMeasure[6]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x00};
+uint8_t HdrStandby[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x01};
+uint8_t HdrOperation[8] = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x02};
+uint8_t HdrTare[8]      = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x03};
+uint8_t HdrRestart[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x04};
+uint8_t HdrFbError[8]   = {0xD5, 0xAA, 0x05, 0x89, 0x06, 0x02, 0x00, 0x0E};
+
+uint8_t buf[MAX_PACKET];
+uint8_t idx        = 0;
+int     startIndex = -1;
+bool    packetReady = false;
+
+uint8_t header, header2, source, length, cmdType, data1, data2, crcLow, crcHigh;
+uint8_t targetID;
+
+void init485() {
+  if (RS485_EN >= 0) {
+    pinMode(RS485_EN, OUTPUT);
+    digitalWrite(RS485_EN, LOW);
+  }
+  RS485Serial.begin(230400, SERIAL_8N1, RS485_RX, RS485_TX);
+}
+
+void resetBuff() {
+  idx = 0;
+  startIndex  = -1;
+  packetReady = false;
+  memset(buf, 0, sizeof(buf));
+}
+
+void pack16(uint8_t *dest, uint16_t value) {
+  dest[0] = (value >> 8) & 0xFF;
+  dest[1] =  value       & 0xFF;
+}
+
+void debugPrintBuf() {
+  Serial.print("[RAW] idx=");
+  Serial.print(idx);
+  Serial.print(" data: ");
+  for (int i = 0; i < idx; i++) Serial.printf("%02X ", buf[i]);
+  Serial.println();
+}
+
+void printHexBuf(const char *label, uint8_t *b, int len) {
+  Serial.print(label);
+  for (int i = 0; i < len; i++) {
+    if (b[i] < 0x10) Serial.print("0");
+    Serial.print(b[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+// Kirim paket RS485 half-duplex dengan CRC16-Modbus
+void sendRS485(uint8_t *hdr, uint8_t hdrLen, uint8_t *data, uint16_t dataLen) {
+  uint8_t tempBuf[hdrLen + dataLen];
+  memcpy(tempBuf, hdr, hdrLen);
+  if (data && dataLen > 0) memcpy(&tempBuf[hdrLen], data, dataLen);
+
+  uint16_t crc  = crc16_modbus(tempBuf, hdrLen + dataLen);
+  uint8_t  crcH = (crc >> 8) & 0xFF;
+  uint8_t  crcL =  crc       & 0xFF;
+
+  if (RS485_EN >= 0) {
+    digitalWrite(RS485_EN, HIGH);
+    delayMicroseconds(10);
+  }
+
+  RS485Serial.write(hdr, hdrLen);
+  if (data && dataLen > 0) RS485Serial.write(data, dataLen);
+  RS485Serial.write(crcH);
+  RS485Serial.write(crcL);
+
+  RS485Serial.flush();
+
+  if (RS485_EN >= 0) {
+    delayMicroseconds(500);
+    digitalWrite(RS485_EN, LOW);
+    delayMicroseconds(500);
+  }
+
+  while (RS485Serial.available()) RS485Serial.read();  // buang echo/garbage
+}
+
+// Terima dan parsing paket dari Mainboard
+// Format: D5 AA [length] [source] [targetID] [cmdType] [data...] [CRCH] [CRCL]
+void read485() {
+  while (RS485Serial.available() && idx < MAX_PACKET) {
+    buf[idx++] = RS485Serial.read();
+  }
+
+  if (idx == 0) return;
+
+  packetReady = false;
+  startIndex  = -1;
+
+  if (idx < 2) {
+    Serial.println("gagal idx < 2");
+    debugPrintBuf();
+    return;
+  }
+
+  for (int i = 0; i < idx - 1; i++) {
+    if (buf[i] == 0xD5 && buf[i+1] == 0xAA) {
+      startIndex = i;
+      Serial.println("header ditemukan");
+      break;
+    }
+  }
+
+  if (startIndex == -1) {
+    Serial.println("gagal index -1");
+    debugPrintBuf();
+    resetBuff();
+    return;
+  }
+
+  if (idx < startIndex + 3) {
+    Serial.println("kurang lengkap");
+    debugPrintBuf();
+    return;
+  }
+
+  header  = buf[startIndex];
+  header2 = buf[startIndex+1];
+  length  = buf[startIndex+2];
+
+  Serial.printf("[DEBUG] Header OK, length=%d, idx=%d\n", length, idx);
+
+  if (idx < startIndex + 3 + length + 2) {
+    Serial.println("paket tidak sesuai length");
+    debugPrintBuf();
+    return;
+  }
+
+  source   = buf[startIndex+3];
+  targetID = buf[startIndex+4];
+  cmdType  = buf[startIndex+5];
+
+  if (cmdType == 0x02) {
+    data1 = buf[startIndex+6];
+    data2 = buf[startIndex+7];
+    Serial.printf("[PARSE] source=0x%02X, targetID=0x%02X, cmdType=0x%02X, data1=0x%02X, data2=0x%02X\n",
+                  source, targetID, cmdType, data1, data2);
+  }
+
+  crcHigh = buf[startIndex + 3 + length];
+  crcLow  = buf[startIndex + 3 + length + 1];
+
+  Serial.print("Header1  : 0x"); Serial.println(header,   HEX);
+  Serial.print("Header2  : 0x"); Serial.println(header2,  HEX);
+  Serial.print("Length   : ");   Serial.println(length);
+  Serial.print("Source   : 0x"); Serial.println(source,   HEX);
+  Serial.print("Target   : 0x"); Serial.println(targetID, HEX);
+  Serial.print("CmdType  : 0x"); Serial.println(cmdType,  HEX);
+  Serial.print("CRC High : 0x"); Serial.println(crcHigh,  HEX);
+  Serial.print("CRC Low  : 0x"); Serial.println(crcLow,   HEX);
+
+  uint8_t  crcDataLen = 3 + length;
+  uint16_t crcCalc    = crc16_modbus(&buf[startIndex], crcDataLen);
+  uint16_t crcRX      = ((uint16_t)crcHigh << 8) | crcLow;
+
+  Serial.printf("[CRC] crcDataLen=%d, crcCalc=0x%04X, crcRX=0x%04X\n", crcDataLen, crcCalc, crcRX);
+
+  if (crcRX != crcCalc) {
+    Serial.printf("[WARN] CRC Gagal! Calc: 0x%04X, Recv: 0x%04X\n", crcCalc, crcRX);
+    resetBuff();
+    return;
+  }
+
+  packetReady = true;
+  Serial.println("[OK] packetReady = true");
+}
