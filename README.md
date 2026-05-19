@@ -19,11 +19,12 @@ Implementasi mengikuti dokumen [`protokol.txt`](protokol.txt).
 
 | Fungsi | ESP32dev | ESP32-C3 |
 |--------|----------|----------|
-| RS485 RX (RO) | GPIO 13 | GPIO 13 |
-| RS485 TX (DI) | GPIO 14 | GPIO 14 |
+| RS485 RX (RO) | GPIO 4 | GPIO 4 |
+| RS485 TX (DI) | GPIO 5 | GPIO 5 |
 | RS485 EN (DE+RE) | Auto (hardware) | Auto (hardware) |
 | I2C SDA | GPIO 21 | GPIO 8 |
 | I2C SCL | GPIO 22 | GPIO 9 |
+| Tombol Status | GPIO 0 | GPIO 0 |
 
 ---
 
@@ -42,7 +43,9 @@ src/
 
 ## Status Saat Ini
 
-Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **dua nilai**: jarak (`cm × 100`) dan sudut adjust (`deg × 100`).
+Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **tiga nilai**: jarak (`cm × 100`), sudut adjust (`deg × 100`), dan status tombol (`× 100`) — masing-masing 3 byte big-endian. Nilai dibulatkan ke 1 angka di belakang koma sebelum dikirim (misal 8.28 → 8.3 → encoded 830).
+
+Setelah menerima CMD `0x00`, slave mengirim **satu paket measurement** langsung, lalu mengaktifkan auto-send: jika tidak ada pengiriman selama **3 detik**, slave otomatis mengirim lagi tanpa perlu request ulang dari master. Auto-send berhenti saat GPIO 0 ditekan (mengirim paket terakhir STATUS `0x000064`) atau saat masuk Standby.
 
 | CMD | Handler | Keterangan |
 |-----|---------|-------------|
@@ -89,31 +92,45 @@ Byte setelah `CMD` adalah reserved dan harus `0x00`.
 **Response (Slave → Master):**
 
 ```
-D5 AA 0A 89 06 00 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [CRC_H] [CRC_L]
+D5 AA 0C 89 06 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [STAT_H STAT_M STAT_L] [CRC_H] [CRC_L]
 ```
 
 | Field | Ukuran | Keterangan |
 |-------|--------|------------|
-| Length | 1 byte | `0x0A` (10 bytes: REQ+ADDR+CMD+reserved+3 byte dist+3 byte angle) |
-| Reserved | 1 byte | `0x00` — fixed, setelah CMD sebelum data |
-| DIST | 3 byte | Jarak/panjang (`cm × 100`) — 24-bit signed integer big-endian |
-| ANGLE | 3 byte | Sudut adjust (`deg × 100`) — 24-bit signed integer big-endian |
+| Length | 1 byte | `0x0C` (12 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle+3 byte status) |
+| DIST | 3 byte | Jarak/panjang (`cm × 100`, dibulatkan 1 desimal) — 24-bit signed integer big-endian |
+| ANGLE | 3 byte | Sudut adjust (`deg × 100`, dibulatkan 1 desimal) — 24-bit signed integer big-endian |
+| STATUS | 3 byte | Status tombol (`× 100`) — `0x000000` = streaming, `0x000064` = tombol GPIO0 ditekan (paket terakhir) |
 
 **Decoding di sisi master:**
 
 ```c
 int32_t length_cm_x100  = (int32_t)((DIST_H  << 16) | (DIST_M  << 8) | DIST_L);
-float   length_cm       = length_cm_x100 / 100.0f;
+float   length_cm       = length_cm_x100 / 100.0f;  // 1 decimal place
 
 int32_t angle_deg_x100  = (int32_t)((ANGLE_H << 16) | (ANGLE_M << 8) | ANGLE_L);
-float   angle_deg       = angle_deg_x100 / 100.0f;
+float   angle_deg       = angle_deg_x100 / 100.0f;  // 1 decimal place
+
+int32_t status_x100     = (int32_t)((STAT_H  << 16) | (STAT_M  << 8) | STAT_L);
+// status_x100 == 0   → streaming, button not pressed
+// status_x100 == 100 → final packet, GPIO0 button pressed
 ```
 
-Contoh: panjang = 8.28 cm → encoded = 828 (`0x00033C`) → bytes = `00 03 3C`
+Contoh: panjang = 8.3 cm → encoded = 830 (`0x00033E`) → bytes = `00 03 3E`
 
-Contoh: angle adjust = 220.09° → encoded = 22009 (`0x0055F9`) → bytes = `00 55 F9`
+Contoh: angle adjust = 220.1° → encoded = 22010 (`0x0055FA`) → bytes = `00 55 FA`
 
 **Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
+
+**Error — AS5600 tidak terkoneksi:**
+
+Jika sensor AS5600 tidak terdeteksi saat menerima CMD `0x00`, slave langsung membalas dengan error frame (CMD `0x02`, SUBCMD `0x99`) dan **tidak mengaktifkan auto-send**:
+
+```
+D5 AA 05 89 06 02 00 99 CA 3B
+```
+
+Selama auto-send aktif (`measurementRequested = true`), jika sensor terputus di tengah streaming, slave mengirim error yang sama dan **menghentikan auto-send**. Master harus mengirim ulang CMD `0x00` setelah sensor kembali terhubung.
 
 ---
 
@@ -140,17 +157,17 @@ Byte `00` setelah CMD adalah reserved, lalu diikuti echo SUBCMD.
 
 | ACK | Frame |
 |-----|-------|
-| Standby | `D5 AA 05 89 06 02 00 01 [CRC]` |
-| Operation | `D5 AA 05 89 06 02 00 02 [CRC]` |
-| Tare | `D5 AA 05 89 06 02 00 03 [CRC]` |
-| Restart | `D5 AA 05 89 06 02 00 04 [CRC]` (sebelum reboot) |
-| Error | `D5 AA 05 89 06 02 00 0E [CRC]` |
+| Standby | `D5 AA 05 89 06 02 00 01 60 3A` |
+| Operation | `D5 AA 05 89 06 02 00 02 61 7A` |
+| Tare | `D5 AA 05 89 06 02 00 03 A1 BB` |
+| Restart | `D5 AA 05 89 06 02 00 04 63 FA` (sebelum reboot) |
+| Error | `D5 AA 05 89 06 02 00 99 CA 3B` |
 
 ---
 
 ## Contoh Frame Lengkap
 
-CRC ditulis big-endian sebagai `[CRC_H] [CRC_L]`. Nilai measurement bergantung posisi AS5600. Contoh di bawah memakai skenario jarak/panjang = 8.28 cm.
+CRC ditulis big-endian sebagai `[CRC_H] [CRC_L]`. Nilai measurement bergantung posisi AS5600. Contoh di bawah memakai skenario jarak/panjang = 8.3 cm.
 
 ### Measurement
 
@@ -160,19 +177,29 @@ Master mengirim:
 D5 AA 04 88 06 00 00 A6 BD
 ```
 
-Slave menjawab:
+Slave menjawab (streaming, button not pressed):
 
 ```
-D5 AA 0A 89 06 00 00 00 03 3C 00 55 F9 [CRC_H] [CRC_L]
+D5 AA 0C 89 06 00 00 03 3E 00 55 FA 00 00 00 [CRC_H] [CRC_L]
 ```
-
-Isi response:
 
 | Field | Hex | Decimal | Arti |
 |-------|-----|---------|------|
-| Reserved | `00` | — | byte reserved setelah CMD |
-| DIST | `00 03 3C` | 828 | 8.28 cm |
-| ANGLE | `00 55 F9` | 22009 | 220.09° (angle adjust) |
+| DIST | `00 03 3E` | 830 | 8.3 cm (= 830 / 100) |
+| ANGLE | `00 55 FA` | 22010 | 220.1° (= 22010 / 100) |
+| STATUS | `00 00 00` | 0 | streaming, button not pressed |
+
+Final packet saat tombol GPIO0 ditekan:
+
+```
+D5 AA 0C 89 06 00 00 03 3E 00 55 FA 00 00 64 [CRC_H] [CRC_L]
+```
+
+| Field | Hex | Decimal | Arti |
+|-------|-----|---------|------|
+| DIST | `00 03 3E` | 830 | 8.3 cm (= 830 / 100) |
+| ANGLE | `00 55 FA` | 22010 | 220.1° (= 22010 / 100) |
+| STATUS | `00 00 64` | 100 | final packet, button pressed (1 × 100) |
 
 ### Standby
 
@@ -232,16 +259,37 @@ D5 AA 05 89 06 02 00 04 63 FA
 
 ### Error
 
-Contoh jika master mengirim subcontrol yang tidak dikenal:
+Error frame `CMD 0x02` SUBCMD `0x99` dikirim slave pada kondisi berikut:
+
+| Kondisi | Pemicu |
+|---------|--------|
+| SUBCMD tidak dikenal | Master kirim `CMD 0x02` dengan SUBCMD selain `0x01`–`0x04` |
+| Measurement saat Standby | Master kirim `CMD 0x00` padahal state `Standby` |
+| AS5600 tidak terdeteksi | Master kirim `CMD 0x00`, sensor tidak merespons I2C |
+| AS5600 terputus saat streaming | Sensor terputus selama auto-send aktif |
+
+Contoh — master kirim SUBCMD tidak dikenal:
 
 ```
 D5 AA 04 88 06 02 FF 86 FC
 ```
 
-Slave menjawab error. Response yang sama juga dipakai jika Measurement dikirim saat state `Standby`:
+Slave menjawab:
 
 ```
-D5 AA 05 89 06 02 00 0E 64 7A
+D5 AA 05 89 06 02 00 99 CA 3B
+```
+
+Contoh — master kirim `CMD 0x00` tetapi AS5600 tidak terkoneksi:
+
+```
+D5 AA 04 88 06 00 00 A6 BD
+```
+
+Slave menjawab error (tidak mengirim data measurement, auto-send tidak aktif):
+
+```
+D5 AA 05 89 06 02 00 99 CA 3B
 ```
 
 ---
@@ -269,16 +317,20 @@ Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output b
 ## State Machine
 
 ```
-         [Standby]  <──── CMD 02 data=0x01
+         [Standby]  <──── CMD 02 SUBCMD 0x01
               │
-              │ CMD 02 data=0x02
+              │ CMD 02 SUBCMD 0x02
               ▼
-         [Operation] ──── CMD 00 ──► Reply Measurement
+         [Operation] ──── CMD 00 ──► AS5600 OK  ──► Reply Measurement + auto-send aktif
+              │                  │
+              │                  └── AS5600 FAIL ──► Error (CMD 02 SUBCMD 0x99), auto-send tidak aktif
               │
-              │ CMD 02 data=0x03
+              │ CMD 02 SUBCMD 0x03
               └──────────────────► Tare (tetap Operation)
 
-         CMD 02 data=0x04 ──► Restart (dari state apapun)
+         CMD 02 SUBCMD 0x04 ──► Restart (dari state apapun)
+
+         Saat auto-send aktif + AS5600 terputus ──► Error (CMD 02 SUBCMD 0x99), auto-send berhenti
 ```
 
 State awal saat boot: **Operation**.
@@ -311,7 +363,7 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 **Urutan pengujian normal:**
 
 1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 05 89 06 02 00 02 61 7A`
-2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → reply: `00` reserved + 3 byte jarak (`cm × 100`) + 3 byte angle adjust (`deg × 100`)
+2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → slave streaming terus: 3 byte jarak (`cm × 100`) + 3 byte angle (`deg × 100`) + STATUS `0x000000`. Tekan GPIO0 → final packet STATUS `0x000064`, slave berhenti
 3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 05 89 06 02 00 03 A1 BB`
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot

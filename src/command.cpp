@@ -4,7 +4,12 @@
 #include <WiFi.h>
 #include "esp_bt.h"
 
-State state = Operation;
+State    state              = Operation;
+volatile bool buttonPressed  = false;
+bool     measurementRequested = false;
+
+static uint32_t lastSentMs        = 0;
+static const uint32_t AUTO_SEND_MS = 3000;  // auto-send jika tidak ada pengiriman selama 3 detik
 
 // --- Power Management ---
 // Standby: matikan radio WiFi/BT & turunkan CPU clock.
@@ -34,19 +39,20 @@ static void exitStandby() {
 
 // --- Feedback helpers ---
 
-// Reply CMD 0x00 (Measurement): jarak (cm × 100) + angle (deg × 100), masing-masing 3 byte big-endian.
-// Format: D5 AA 09 89 [ADDR] 00 [DIST_H DIST_M DIST_L ANGLE_H ANGLE_M ANGLE_L] [CRC_H CRC_L]
-static void feedbackMeasure(float lengthCm, float angleDeg) {
-  int32_t lengthInt = (int32_t)(lengthCm * 100.0f + (lengthCm >= 0 ? 0.5f : -0.5f));
-  int32_t angleInt  = (int32_t)(angleDeg  * 100.0f + (angleDeg  >= 0 ? 0.5f : -0.5f));
+// Reply CMD 0x00: distance (cm×100) + angle (deg×100) + statusInt (×100), 3 byte big-endian each.
+// Format: D5 AA 0C 89 [ADDR] 00 [DIST×3 ANGLE×3 STATUS×3] [CRC_H CRC_L]
+static void feedbackMeasure(float lengthCm, float angleDeg, int32_t statusInt) {
+  int32_t lengthInt = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
+  int32_t angleInt  = (int32_t)(roundf(angleDeg  * 10.0f)) * 10;
 
-  uint8_t data[6];
-  pack24(data,     (uint32_t)lengthInt);
+  uint8_t data[9];
+  pack24(data + 0, (uint32_t)lengthInt);
   pack24(data + 3, (uint32_t)angleInt);
+  pack24(data + 6, (uint32_t)statusInt);
 
   sendRS485(HdrMeasure, sizeof(HdrMeasure), data, sizeof(data));
-  Serial.printf("[FB] Measure: distance=%.2f cm (enc=%d), angle=%.2f deg (enc=%d)\n",
-                lengthCm, lengthInt, angleDeg, angleInt);
+  Serial.printf("[FB] Measure: dist=%.2f cm (%d), angle=%.2f deg (%d), status=%d\n",
+                lengthCm, lengthInt, angleDeg, angleInt, statusInt);
 }
 
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
@@ -58,6 +64,7 @@ static void feedbackError()     { sendRS485(HdrFbError,   sizeof(HdrFbError),   
 // --- Actions ---
 
 static void doStandby() {
+  measurementRequested = false;
   state = Standby;
   enterStandby();
 }
@@ -73,24 +80,65 @@ static void doRestart() {
 
 // --- Command handlers ---
 
-static void handleMeasurement() {
-  Serial.println("[CMD 0x00] Length measurement request");
+static bool readEncoder(float &lengthCm, float &angleDeg) {
+  if (!as5600.isConnected()) {
+    Serial.println("[ENCODER] AS5600 tidak terdeteksi - reading timeout");
+    return false;
+  }
+  int32_t rawPosition = as5600.getCumulativePosition();
+  int32_t deltaRaw    = rawPosition - startRaw;
+  float   degree      = (float)deltaRaw * 360.0f / 4096.0f;
+  angleDeg = degree + 0.44f;          // degreeAdjusted, kembali ke 0.44 saat tare
+  lengthCm = getDistance(angleDeg);   // ikuti reference: getDistance(degreeAdjusted)
+  return true;
+}
 
+static void handleMeasurement() {
   if (data1 != 0x00) {
-    Serial.printf("reserved measurement tidak valid: 0x%02X\n", data1);
+    Serial.printf("[CMD 0x00] reserved tidak valid: 0x%02X\n", data1);
     feedbackError();
     return;
   }
 
-  int32_t rawPosition  = as5600.getCumulativePosition();
-  int32_t deltaRaw     = rawPosition - startRaw;
-  float   angleDeg     = (float)deltaRaw * 360.0f / 4096.0f;
-  float   angleAdj     = angleDeg + 0.44f;
-  float   lengthCm     = getDistance(angleAdj);
+  buttonPressed = false;
+  float lengthCm, angleAdj;
+  if (!readEncoder(lengthCm, angleAdj)) {
+    feedbackError();
+    return;
+  }
+  feedbackMeasure(lengthCm, angleAdj, 0);
+  lastSentMs = millis();
+  measurementRequested = true;
+  Serial.println("[CMD 0x00] Single measurement sent, auto-send active");
+}
 
-  Serial.printf("[CMD 0x00] L=%.2fcm raw=%d delta=%d angle=%.2fdeg angleAdj=%.2fdeg\n",
-                lengthCm, rawPosition, deltaRaw, angleDeg, angleAdj);
-  feedbackMeasure(lengthCm, angleAdj);
+void loopMeasurement() {
+  if (!measurementRequested) return;
+
+  if (buttonPressed) {
+    buttonPressed = false;
+    measurementRequested = false;
+    float lengthCm, angleAdj;
+    if (!readEncoder(lengthCm, angleAdj)) {
+      feedbackError();
+      return;
+    }
+    feedbackMeasure(lengthCm, angleAdj, 100);
+    Serial.println("[CMD 0x00] Stopped by GPIO0");
+    return;
+  }
+
+  if (millis() - lastSentMs < AUTO_SEND_MS) return;
+
+  float lengthCm, angleAdj;
+  if (!readEncoder(lengthCm, angleAdj)) {
+    feedbackError();
+    measurementRequested = false;
+    return;
+  }
+  feedbackMeasure(lengthCm, angleAdj, 0);
+  lastSentMs = millis();
+  Serial.println("[AUTO] Measurement auto-send");
 }
 
 static void handleMode() {
