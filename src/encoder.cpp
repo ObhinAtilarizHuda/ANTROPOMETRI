@@ -20,5 +20,9 @@ float getDistance(float x) {
 
 void doTare() {
   startRaw = as5600.getCumulativePosition();
-  Serial.println("[TARE] startRaw updated");
+  Serial.printf("[TARE] startRaw=%d (degree reset to 0.44)\n", startRaw);
+}
+
+void pollEncoder() {
+  as5600.getCumulativePosition();
 }

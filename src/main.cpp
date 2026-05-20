@@ -5,20 +5,30 @@
 #include "encoder.h"
 #include "command.h"
 
+static void IRAM_ATTR onButtonPress() {
+  buttonPressed = true;
+}
+
 void setup() {
   delay(1000);
-  Serial.begin(115200);
+  Serial.begin(115200); 
   init485();
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButtonPress, FALLING);
+
   Wire.begin(SDA_PIN, SCL_PIN);
   Serial.print("AS5600 Connected: ");
   Serial.println(as5600.isConnected());
   delay(500);
-  startRaw = as5600.getCumulativePosition();
+  doTare();
   Serial.println("Device Ready");
 }
 
 void loop() {
   read485();
+  pollEncoder();
+  loopMeasurement();
 
   if (packetReady) {
     packetReady = false;

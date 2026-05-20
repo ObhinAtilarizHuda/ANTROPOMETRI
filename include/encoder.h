@@ -7,3 +7,4 @@ extern int32_t  startRaw;
 
 float getDistance(float x);
 void  doTare();
+void  pollEncoder();

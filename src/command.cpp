@@ -8,8 +8,11 @@ State    state              = Operation;
 volatile bool buttonPressed  = false;
 bool     measurementRequested = false;
 
-static uint32_t lastSentMs        = 0;
-static const uint32_t AUTO_SEND_MS = 3000;  // auto-send jika tidak ada pengiriman selama 3 detik
+static uint32_t lastSentMs              = 0;
+static uint32_t measurementStartMs      = 0;
+static int32_t  lastSentDistInt         = 0;
+static const uint32_t MIN_SEND_MS           = 20;     // rate limit antar pengiriman (ms)
+static const uint32_t INACTIVITY_TIMEOUT_MS = 60000;  // timeout 1 menit tanpa tombol (ms)
 
 // --- Power Management ---
 // Standby: matikan radio WiFi/BT & turunkan CPU clock.
@@ -107,14 +110,25 @@ static void handleMeasurement() {
     return;
   }
   feedbackMeasure(lengthCm, angleAdj, 0);
-  lastSentMs = millis();
+  lastSentMs          = millis();
+  measurementStartMs  = millis();
+  lastSentDistInt     = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
   measurementRequested = true;
-  Serial.println("[CMD 0x00] Single measurement sent, auto-send active");
+  Serial.println("[CMD 0x00] Single measurement sent, streaming on change active");
 }
 
 void loopMeasurement() {
   if (!measurementRequested) return;
 
+  // Inactivity timeout: 1 menit tanpa tombol
+  if (millis() - measurementStartMs >= INACTIVITY_TIMEOUT_MS) {
+    Serial.println("[TIMEOUT] 1 min no button, streaming stopped");
+    feedbackError();
+    measurementRequested = false;
+    return;
+  }
+
+  // Stop oleh tombol GPIO0
   if (buttonPressed) {
     buttonPressed = false;
     measurementRequested = false;
@@ -128,7 +142,8 @@ void loopMeasurement() {
     return;
   }
 
-  if (millis() - lastSentMs < AUTO_SEND_MS) return;
+  // Rate limit: jaga jarak minimum antar pengiriman
+  if (millis() - lastSentMs < MIN_SEND_MS) return;
 
   float lengthCm, angleAdj;
   if (!readEncoder(lengthCm, angleAdj)) {
@@ -136,9 +151,14 @@ void loopMeasurement() {
     measurementRequested = false;
     return;
   }
+
+  int32_t currentDistInt = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
+  if (currentDistInt == lastSentDistInt) return;  // tidak ada perubahan, tidak perlu kirim
+
+  Serial.printf("[CHANGE] dist=%d -> %d, sending\n", lastSentDistInt, currentDistInt);
   feedbackMeasure(lengthCm, angleAdj, 0);
-  lastSentMs = millis();
-  Serial.println("[AUTO] Measurement auto-send");
+  lastSentMs      = millis();
+  lastSentDistInt = currentDistInt;
 }
 
 static void handleMode() {
