@@ -62,6 +62,7 @@ static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   
 static void feedbackOperation() { sendRS485(HdrOperation, sizeof(HdrOperation), nullptr, 0); Serial.println("[FB] Operation ack"); }
 static void feedbackTare()      { sendRS485(HdrTare,      sizeof(HdrTare),      nullptr, 0); Serial.println("[FB] Tare ack"); }
 static void feedbackRestart()   { sendRS485(HdrRestart,   sizeof(HdrRestart),   nullptr, 0); Serial.println("[FB] Restart ack"); }
+static void feedbackCancel()    { sendRS485(HdrCancel,    sizeof(HdrCancel),    nullptr, 0); Serial.println("[FB] Cancel ack"); }
 static void feedbackError()     { sendRS485(HdrFbError,   sizeof(HdrFbError),   nullptr, 0); Serial.println("[FB] Error ack"); }
 
 // --- Actions ---
@@ -79,6 +80,11 @@ static void doOperation() {
 
 static void doRestart() {
   ESP.restart();
+}
+
+static void doCancel() {
+  measurementRequested = false;
+  buttonPressed = false;
 }
 
 // --- Command handlers ---
@@ -185,6 +191,12 @@ static void handleMode() {
       Serial.println("Device Restart");
       feedbackRestart();
       doRestart();
+      break;
+
+    case 0x05:    // Cancel measurement
+      Serial.println("Cancel Measurement");
+      doCancel();
+      feedbackCancel();
       break;
 
     default:

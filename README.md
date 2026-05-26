@@ -45,7 +45,7 @@ src/
 
 Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **tiga nilai**: jarak (`cm × 100`), sudut adjust (`deg × 100`), dan status tombol (`× 100`) — masing-masing 3 byte big-endian. Nilai dibulatkan ke 1 angka di belakang koma sebelum dikirim (misal 8.28 → 8.3 → encoded 830).
 
-Setelah menerima CMD `0x00`, slave mengirim **satu paket measurement** langsung, lalu mengaktifkan auto-send: jika tidak ada pengiriman selama **3 detik**, slave otomatis mengirim lagi tanpa perlu request ulang dari master. Auto-send berhenti saat GPIO 0 ditekan (mengirim paket terakhir STATUS `0x000064`) atau saat masuk Standby.
+Setelah menerima CMD `0x00`, slave mengirim **satu paket measurement** langsung, lalu mengaktifkan auto-send: jika tidak ada pengiriman selama **3 detik**, slave otomatis mengirim lagi tanpa perlu request ulang dari master. Auto-send berhenti saat GPIO 0 ditekan (mengirim paket terakhir STATUS `0x000064`), saat master mengirim Cancel (CMD `0x02` SUBCMD `0x05` — slave hanya membalas ACK Cancel, **tidak** mengirim paket measurement terakhir), atau saat masuk Standby.
 
 | CMD | Handler | Keterangan |
 |-----|---------|-------------|
@@ -148,6 +148,7 @@ D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
 | `0x02` | Operation | Exit standby / ready |
 | `0x03` | Tare | Set posisi AS5600 saat ini sebagai titik nol |
 | `0x04` | Restart | Reboot ESP32 |
+| `0x05` | Cancel | Stop auto-send measurement (CMD `0x00`) tanpa kirim paket terakhir |
 
 Untuk `CMD 0x02`, byte parameter setelah `CMD` diisi dengan `SUBCMD`.
 
@@ -161,6 +162,7 @@ Byte `00` setelah CMD adalah reserved, lalu diikuti echo SUBCMD.
 | Operation | `D5 AA 05 89 06 02 00 02 61 7A` |
 | Tare | `D5 AA 05 89 06 02 00 03 A1 BB` |
 | Restart | `D5 AA 05 89 06 02 00 04 63 FA` (sebelum reboot) |
+| Cancel | `D5 AA 05 89 06 02 00 05 A3 3B` |
 | Error | `D5 AA 05 89 06 02 00 99 CA 3B` |
 
 ---
@@ -257,6 +259,24 @@ Slave menjawab sebelum reboot:
 D5 AA 05 89 06 02 00 04 63 FA
 ```
 
+### Cancel
+
+Digunakan untuk menghentikan auto-send measurement (CMD `0x00`) yang sedang aktif. Setelah menerima Cancel, slave **berhenti mengirim paket measurement** (termasuk paket terakhir bertanda STATUS `0x000064`) dan hanya membalas ACK Cancel.
+
+Master mengirim:
+
+```
+D5 AA 04 88 06 02 05 C5 7C
+```
+
+Slave menjawab:
+
+```
+D5 AA 05 89 06 02 00 05 A3 3B
+```
+
+Cancel tetap di-ACK meskipun auto-send tidak sedang aktif (no-op). Setelah Cancel, master harus mengirim ulang CMD `0x00` jika ingin memulai measurement baru.
+
 ### Error
 
 Error frame `CMD 0x02` SUBCMD `0x99` dikirim slave pada kondisi berikut:
@@ -330,6 +350,8 @@ Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output b
 
          CMD 02 SUBCMD 0x04 ──► Restart (dari state apapun)
 
+         CMD 02 SUBCMD 0x05 ──► Cancel auto-send (slave hanya kirim ACK Cancel, tidak kirim measurement)
+
          Saat auto-send aktif + AS5600 terputus ──► Error (CMD 02 SUBCMD 0x99), auto-send berhenti
 ```
 
@@ -363,7 +385,7 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 **Urutan pengujian normal:**
 
 1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 05 89 06 02 00 02 61 7A`
-2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → slave streaming terus: 3 byte jarak (`cm × 100`) + 3 byte angle (`deg × 100`) + STATUS `0x000000`. Tekan GPIO0 → final packet STATUS `0x000064`, slave berhenti
+2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → slave streaming terus: 3 byte jarak (`cm × 100`) + 3 byte angle (`deg × 100`) + STATUS `0x000000`. Tekan GPIO0 → final packet STATUS `0x000064`, slave berhenti. Alternatif: kirim **Cancel** (`D5 AA 04 88 06 02 05 C5 7C`) → ACK `D5 AA 05 89 06 02 00 05 A3 3B`, slave berhenti tanpa kirim paket measurement
 3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → ACK `D5 AA 05 89 06 02 00 03 A1 BB`
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot
