@@ -2,9 +2,9 @@
 #include <Arduino.h>
 
 // RS485 pins (ESP32-C3: GPIO max 21 — sesuaikan jika perlu)
-#define RS485_RX   13   // RO
-#define RS485_TX   14   // DI
-#define RS485_EN   -1   // -1 = auto direction (hardware handle DE/RE), set GPIO pin for manual control
+#define RS485_RX   7   // RO
+#define RS485_TX   5   // DI
+#define RS485_EN   3   // -1 = auto direction (hardware handle DE/RE), set GPIO pin for manual control
 
 #define SLAVE_ADDRESS 0x06
 
@@ -18,3 +18,5 @@
 #endif
 
 #define MAX_PACKET 32
+
+#define BUTTON_PIN 0

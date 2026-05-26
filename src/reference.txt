@@ -1,0 +1,85 @@
+#include <Wire.h>
+#include "AS5600.h"
+#include <math.h>
+AS5600 as5600;
+
+#define SDA_PIN 8
+#define SCL_PIN 9
+
+int32_t startRaw = 0;
+
+float getDistance(float x)
+{
+  float y = 0;
+
+  if (x >= 0.44 && x <= 399.2)
+    y = 0.0374*x + 0.0487;
+
+  else if (x > 399.2 && x <= 801.12)
+    y = 0.0373*x + 0.108;
+
+  else if (x > 801.12 && x <= 1216.67)
+    y = 0.0362*x + 1.04;
+
+  else if (x > 1216.67 && x <= 1638.81)
+    y = 0.0355*x + 1.83;
+
+  else if (x > 1638.81 && x <= 2068.33)
+    y = 0.0349*x + 2.83;
+
+  else if (x > 2068.33 && x <= 2504.09)
+    y = 0.0342*x + 4.26;
+
+  else if (x > 2504.09 && x <= 2956.73)
+    y = 0.0332*x + 6.93;
+
+  else if (x > 2956.73 && x <= 3421.05)
+    y = 0.0330*x + 7.49;
+
+  else if (x > 3421.05 && x <= 3879.49)
+    y = 0.0320*x + 10.7;
+
+  else if (x > 3879.49 && x <= 4356.74)
+    y = 0.0314*x + 13.4;
+
+  return y;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  Serial.print("Connected: ");
+  Serial.println(as5600.isConnected());
+
+  delay(500);
+
+  startRaw = as5600.getCumulativePosition();
+}
+
+void loop()
+{
+  int32_t raw = as5600.getCumulativePosition();
+
+  // selisih dari posisi awal
+  int32_t delta = raw - startRaw;
+
+  // convert ke degree (bisa >360)
+  float degree = delta * 360.0 / 4096.0;
+
+  // geser supaya awal = 144°
+  float degreeAdjusted = degree + 0.44;
+
+  float distance = getDistance(degreeAdjusted);
+
+  Serial.print("Degree: ");
+  Serial.print(degree);
+
+  Serial.print("| DegreeAdj: ");
+  Serial.print(degreeAdjusted);
+
+  Serial.print(" | Distance: ");
+  Serial.println(distance, 1);
+}
