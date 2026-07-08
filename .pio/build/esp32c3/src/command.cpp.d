@@ -166,6 +166,7 @@
  include/config.h include/encoder.h .pio/libdeps/esp32c3/AS5600/AS5600.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src/Wire.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \
+ include/buzzer.h include/button.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFi.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/cores/esp32/Print.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/cores/esp32/IPv6Address.h \

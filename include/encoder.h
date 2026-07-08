@@ -8,3 +8,4 @@ extern int32_t  startRaw;
 float getDistance(float x);
 void  doTare();
 void  pollEncoder();
+void  testSensor();   // mode test: cetak Degree | Degree Adjust | Distance ke Serial Monitor

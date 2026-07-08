@@ -5,17 +5,16 @@ int32_t startRaw = 0;
 
 // Kalibrasi jarak piecewise-linear dari posisi encoder (derajat akumulatif)
 float getDistance(float x) {
-  if      (x >= 0.44   && x <= 399.2)   return 0.0374f*x + 0.0487f;
-  else if (x > 399.2   && x <= 801.12)  return 0.0373f*x + 0.108f;
-  else if (x > 801.12  && x <= 1216.67) return 0.0362f*x + 1.04f;
-  else if (x > 1216.67 && x <= 1638.81) return 0.0355f*x + 1.83f;
-  else if (x > 1638.81 && x <= 2068.33) return 0.0349f*x + 2.83f;
-  else if (x > 2068.33 && x <= 2504.09) return 0.0342f*x + 4.26f;
-  else if (x > 2504.09 && x <= 2956.73) return 0.0332f*x + 6.93f;
-  else if (x > 2956.73 && x <= 3421.05) return 0.0330f*x + 7.49f;
-  else if (x > 3421.05 && x <= 3879.49) return 0.0320f*x + 10.7f;
-  else if (x > 3879.49 && x <= 4356.74) return 0.0314f*x + 13.4f;
-  return 0.0f;
+  float d = 0.0f;
+  if      (x >= 0.0   && x <= 597.3)   d = 0.0352f*x + -0.031f;
+  else if (x > 597.3   && x <= 1476.4)  d = 0.0341f*x + 0.712f;
+  else if (x > 1476.4  && x <= 2304.8) d = 0.0326f*x + 2.9f;
+  else if (x > 2304.8 && x <= 3068.4) d =  0.0315*x + 5.57f;
+  else if (x > 3068.4 && x <= 3656.6) d = 0.0305*x +  8.45f;
+  else if (x > 3656.6 && x <= 4689.3) d = 0.0291*x +  13.6f;
+  else if (x > 4689.3)                d = 150.0f;   // di luar rentang kalibrasi: tahan di 150 cm
+  if (d < 0.0f) d = 0.0f;   // clamp negatif ke 0 (mis. -0.015 saat tare)
+  return d;
 }
 
 void doTare() {
@@ -25,4 +24,24 @@ void doTare() {
 
 void pollEncoder() {
   as5600.getCumulativePosition();
+}
+
+// Mode test sensor: baca encoder lalu cetak Degree, Degree Adjust, dan Distance
+// ke Serial Monitor dengan 1 angka di belakang koma. Tanpa komunikasi RS485.
+void testSensor() {
+  // getCumulativePosition() tetap dipanggil tiap loop agar counter akumulatif
+  // tidak ketinggalan saat encoder diputar cepat.
+  int32_t rawPosition  = as5600.getCumulativePosition();
+  int32_t deltaRaw     = rawPosition - startRaw;
+  float   degree       = (float)deltaRaw * 360.0f / 4096.0f;
+  float   degreeAdjust = degree + 0.44f;          // sama seperti operasi normal (tare -> 0.44)
+  float   distance     = getDistance(degreeAdjust);
+
+  // Batasi laju cetak ~10 Hz agar Serial Monitor tidak banjir.
+  static uint32_t lastPrintMs = 0;
+  if (millis() - lastPrintMs < 100) return;
+  lastPrintMs = millis();
+
+  Serial.printf("Degree: %.1f | Degree Adjust: %.1f | Distance: %.1f\n",
+                degree, degreeAdjust, distance);
 }

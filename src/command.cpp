@@ -1,11 +1,12 @@
 #include "command.h"
 #include "rs485.h"
 #include "encoder.h"
+#include "buzzer.h"
+#include "button.h"
 #include <WiFi.h>
 #include "esp_bt.h"
 
 State    state              = Operation;
-volatile bool buttonPressed  = false;
 bool     measurementRequested = false;
 
 static uint32_t lastSentMs              = 0;
@@ -84,7 +85,7 @@ static void doRestart() {
 
 static void doCancel() {
   measurementRequested = false;
-  buttonPressed = false;
+  clearButtonGestures();
 }
 
 // --- Command handlers ---
@@ -109,18 +110,18 @@ static void handleMeasurement() {
     return;
   }
 
-  buttonPressed = false;
-  float lengthCm, angleAdj;
-  if (!readEncoder(lengthCm, angleAdj)) {
+  if (!as5600.isConnected()) {
+    Serial.println("[CMD 0x00] AS5600 tidak terkoneksi");
     feedbackError();
     return;
   }
-  feedbackMeasure(lengthCm, angleAdj, 0);
-  lastSentMs          = millis();
+
+  clearButtonGestures();             // buang gesture lama agar tidak langsung terkirim
   measurementStartMs  = millis();
-  lastSentDistInt     = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
+  lastSentMs          = millis();
+  lastSentDistInt     = INT32_MIN;   // force first monitor print
   measurementRequested = true;
-  Serial.println("[CMD 0x00] Single measurement sent, streaming on change active");
+  Serial.println("[CMD 0x00] Armed, monitoring on Serial — waiting for single click to send");
 }
 
 void loopMeasurement() {
@@ -128,15 +129,14 @@ void loopMeasurement() {
 
   // Inactivity timeout: 1 menit tanpa tombol
   if (millis() - measurementStartMs >= INACTIVITY_TIMEOUT_MS) {
-    Serial.println("[TIMEOUT] 1 min no button, streaming stopped");
+    Serial.println("[TIMEOUT] 1 min no button, measurement cancelled");
     feedbackError();
     measurementRequested = false;
     return;
   }
 
-  // Stop oleh tombol GPIO0
-  if (buttonPressed) {
-    buttonPressed = false;
+  // Klik tombol → kirim satu paket ke master, lalu stop
+  if (takeSendGesture()) {
     measurementRequested = false;
     float lengthCm, angleAdj;
     if (!readEncoder(lengthCm, angleAdj)) {
@@ -144,12 +144,14 @@ void loopMeasurement() {
       return;
     }
     feedbackMeasure(lengthCm, angleAdj, 100);
-    Serial.println("[CMD 0x00] Stopped by GPIO0");
+    startBeep(MEASURE_BEEP_MS);   // beep tanda measurement selesai dikirim ke master
+    Serial.println("[CMD 0x00] Sent on single click");
     return;
   }
 
-  // Rate limit: jaga jarak minimum antar pengiriman
+  // Rate limit polling encoder untuk Serial monitor
   if (millis() - lastSentMs < MIN_SEND_MS) return;
+  lastSentMs = millis();
 
   float lengthCm, angleAdj;
   if (!readEncoder(lengthCm, angleAdj)) {
@@ -159,12 +161,23 @@ void loopMeasurement() {
   }
 
   int32_t currentDistInt = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
-  if (currentDistInt == lastSentDistInt) return;  // tidak ada perubahan, tidak perlu kirim
+  if (currentDistInt == lastSentDistInt) return;  // tidak ada perubahan, skip print
 
-  Serial.printf("[CHANGE] dist=%d -> %d, sending\n", lastSentDistInt, currentDistInt);
-  feedbackMeasure(lengthCm, angleAdj, 0);
-  lastSentMs      = millis();
+  Serial.printf("[MONITOR] dist=%.2f cm (%d), angle=%.2f deg — not sent\n",
+                lengthCm, currentDistInt, angleAdj);
   lastSentDistInt = currentDistInt;
+}
+
+// Tare inisiatif user: tahan tombol >= 5 detik => tare lokal + lapor ke master
+// (walaupun master belum meminta). Tare atas perintah master ditangani langsung
+// di handleMode() case 0x03.
+void loopTare() {
+  if (takeTareGesture()) {           // tombol ditahan >= 5 detik
+    doTare();
+    feedbackTare();                  // beritahu master walau tidak diminta
+    startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
+    Serial.println("[TARE] Tahan 5 detik — tare & lapor ke master");
+  }
 }
 
 static void handleMode() {
@@ -181,10 +194,11 @@ static void handleMode() {
       feedbackOperation();
       break;
 
-    case 0x03:    // Tare
-      Serial.println("Tare");
+    case 0x03:    // Tare: langsung tare & balas ke master
+      Serial.println("Tare requested by master — langsung tare");
       doTare();
       feedbackTare();
+      startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
       break;
 
     case 0x04:    // Restart

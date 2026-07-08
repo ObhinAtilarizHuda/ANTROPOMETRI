@@ -165,4 +165,5 @@
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \
  include/config.h include/rs485.h \
  C:/Users/SER5\ PRO/.platformio/packages/framework-arduinoespressif32/cores/esp32/HardwareSerial.h \
- include/encoder.h .pio/libdeps/esp32c3/AS5600/AS5600.h include/command.h
+ include/encoder.h .pio/libdeps/esp32c3/AS5600/AS5600.h include/command.h \
+ include/buzzer.h include/button.h
