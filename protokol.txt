@@ -34,7 +34,7 @@ Big-endian format (MSB first)
 CRC-16 Modbus Calculation
 uint16_t crc16_modbus(const uint8_t *data, uint16_t len) {
     uint16_t crc = 0xFFFF;
-    
+
     for (uint16_t i = 0; i < len; i++) {
         crc ^= data[i];
         for (uint8_t j = 0; j < 8; j++) {
@@ -53,20 +53,41 @@ D5 AA 04 88 06 00 00 [CRC_H] [CRC_L]
 Fields:
 - Length: 0x04 (4 bytes: REQ+ADDR+CMD+reserved)
 - Command: 0x00
-- Reserved: 0x00
-Response (Slave to Master)
-D5 AA 06 89 06 00 [DIST_H][DIST_M][DIST_L] [CRC_H] [CRC_L]
+- Reserved: 0x00 (harus 0x00, selain itu dibalas Error)
+
+Slave tidak langsung membalas request ini. Slave masuk mode "armed": membaca
+AS5600 terus-menerus (dicetak ke Serial monitor untuk debug) sambil menunggu
+klik tombol. Saat tombol diklik sekali, slave mengirim satu paket measurement
+lalu kembali idle. Mode armed dibatalkan tanpa kirim paket jika: master
+mengirim Cancel (CMD 0x02 SUBCMD 0x05), master mengirim Standby, atau timeout
+60 detik tanpa tombol (slave kirim Error frame).
+
+Response (Slave to Master) — dikirim saat tombol diklik
+D5 AA 0C 89 06 00 [DIST_H][DIST_M][DIST_L] [ANGLE_H][ANGLE_M][ANGLE_L] [STAT_H][STAT_M][STAT_L] [CRC_H] [CRC_L]
 Fields:
-- Length : 0x06 (6 bytes: REQ+ADDR+CMD+3 byte data)
-- Measurement data : 1 × 3 bytes (24-bit signed integer)
-  - Distance/length (cm × 100)
+- Length : 0x0C (12 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle+3 byte status)
+- DIST   : jarak/panjang (cm x 100, dibulatkan 1 desimal) — 24-bit signed integer big-endian
+- ANGLE  : sudut adjust (deg x 100, dibulatkan 1 desimal) — 24-bit signed integer big-endian
+- STATUS : status tombol (x 100) — selalu 0x000064 karena slave hanya mengirim saat tombol diklik
 Data Format:
-int32_t length_cm_x100 = (int32_t)((DIST_H << 16) | (DIST_M << 8) | DIST_L);
-float length_cm = length_cm_x100 / 100.0f;
+int32_t length_cm_x100  = (int32_t)((DIST_H  << 16) | (DIST_M  << 8) | DIST_L);
+float   length_cm       = length_cm_x100 / 100.0f;
+int32_t angle_deg_x100  = (int32_t)((ANGLE_H << 16) | (ANGLE_M << 8) | ANGLE_L);
+float   angle_deg       = angle_deg_x100 / 100.0f;
+int32_t status_x100     = (int32_t)((STAT_H  << 16) | (STAT_M  << 8) | STAT_L);
 Example:
-Length = 8.28 cm
-Encoded = 828 (0x033C)
-Bytes = [0x00, 0x03, 0x3C]
+Length = 8.3 cm
+Encoded = 830 (0x00033E)
+Bytes = [0x00, 0x03, 0x3E]
+
+Syarat: State harus Operation. Jika Standby, slave membalas Error.
+
+Error — AS5600 tidak terkoneksi:
+Jika sensor AS5600 tidak terdeteksi saat menerima CMD 0x00, slave langsung
+membalas dengan error frame (lihat "Error Responses" di bawah) dan tidak
+masuk mode armed. Selama mode armed aktif, jika sensor terputus saat polling,
+slave mengirim error yang sama dan membatalkan mode armed.
+
 CMD 0x02: Control Commands
 Request (Master to Slave)
 D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
@@ -74,12 +95,42 @@ Fields:
 - Length: 0x04 (4 bytes: REQ+ADDR+CMD+SUBCMD)
 - Command: 0x02
 - SUBCMD: control subcommand
+
 SUBCMD      Command         Description
-0x01        Tare            Set current AS5600 position as zero point
-0x0A        Standby         Enter low power mode
-0x0B        Operation       Exit standby / ready
-0x0D        Restart         Reboot ESP32
-Response (Slave to Master)
-D5 AA 04 89 06 02 [SUBCMD echo] [CRC_H] [CRC_L]
-Error response:
-D5 AA 04 89 06 02 0E [CRC_H] [CRC_L]
+0x01        Standby         Enter low power mode (WiFi/BT off, CPU 80MHz)
+0x02        Operation       Exit standby / ready
+0x03        Tare            Set current AS5600 position as zero point (langsung, balas ACK Tare)
+0x04        Restart         Reboot ESP32
+0x05        Cancel          Batalkan mode armed (measurement/tare) tanpa kirim hasil
+
+Response (Slave to Master) — ACK
+D5 AA 05 89 06 02 00 [SUBCMD echo] [CRC_H] [CRC_L]
+Fields:
+- Length: 0x05 (5 bytes: REQ+ADDR+CMD+reserved+SUBCMD echo)
+- Reserved: 0x00 (byte tetap setelah CMD, sebelum SUBCMD echo)
+- SUBCMD echo: subcommand yang diminta master
+
+Tare bisa slave-initiated: selain sebagai ACK atas perintah master, frame
+Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik)
+walaupun master tidak memintanya.
+
+Error Responses
+D5 AA 05 89 06 02 00 99 [CRC_H] [CRC_L]
+Dikirim slave pada kondisi:
+- SUBCMD tidak dikenal (selain 0x01-0x05)
+- Master kirim CMD 0x00 saat state Standby
+- AS5600 tidak terdeteksi saat menerima CMD 0x00
+- AS5600 terputus saat mode armed measurement aktif
+- Timeout 60 detik tanpa klik tombol setelah CMD 0x00
+
+Contoh Frame (CRC terverifikasi terhadap implementasi crc16_modbus di atas)
+Standby   req: D5 AA 04 88 06 02 01 06 7D   | ack: D5 AA 05 89 06 02 00 01 60 3A
+Operation req: D5 AA 04 88 06 02 02 07 3D   | ack: D5 AA 05 89 06 02 00 02 61 7A
+Tare      req: D5 AA 04 88 06 02 03 C7 FC   | ack: D5 AA 05 89 06 02 00 03 A1 BB
+Restart   req: D5 AA 04 88 06 02 04 05 BD   | ack: D5 AA 05 89 06 02 00 04 63 FA
+Cancel    req: D5 AA 04 88 06 02 05 C5 7C   | ack: D5 AA 05 89 06 02 00 05 A3 3B
+Measurement req: D5 AA 04 88 06 00 00 A6 BD
+Error ack (SUBCMD tidak dikenal / AS5600 gagal / timeout): D5 AA 05 89 06 02 00 99 CA 3B
+
+Detail lengkap (state machine, gesture tombol, buzzer, kalibrasi getDistance)
+lihat README.md.
