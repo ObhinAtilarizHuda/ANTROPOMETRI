@@ -12,7 +12,8 @@ uint8_t HdrOperation[8]    = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, 0x02, 0x00,
 uint8_t HdrTare[8]         = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, 0x02, 0x00, 0x03};
 uint8_t HdrRestart[8]      = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, 0x02, 0x00, 0x04};
 uint8_t HdrCancel[8]       = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, 0x02, 0x00, 0x05};
-uint8_t HdrFbError[8]      = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, 0x02, 0x00, 0x99};
+// Reply error — D5 AA 05 89 [ADDR] 03 00 [CODE] + CRC. Byte terakhir diisi kode error saat kirim.
+uint8_t HdrError[8]        = {0xD5, 0xAA, 0x05, 0x89, SLAVE_ADDRESS, CMD_ERROR, 0x00, 0x00};
 
 uint8_t buf[MAX_PACKET];
 uint8_t idx        = 0;
@@ -95,6 +96,13 @@ void sendRS485(uint8_t *hdr, uint8_t hdrLen, uint8_t *data, uint16_t dataLen) {
   }
 
   while (RS485Serial.available()) RS485Serial.read();  // buang echo/garbage
+}
+
+// Kirim frame error ke master: D5 AA 05 89 [ADDR] 03 00 [code] + CRC
+void sendError(uint8_t code) {
+  HdrError[7] = code;
+  sendRS485(HdrError, sizeof(HdrError), nullptr, 0);
+  Serial.printf("[ERR] kirim error code=0x%02X\n", code);
 }
 
 // Terima dan parsing paket dari Mainboard
@@ -209,6 +217,8 @@ void read485() {
 
   if (crcRX != crcCalc) {
     Serial.printf("[WARN] CRC Gagal! Calc: 0x%04X, Recv: 0x%04X\n", crcCalc, crcRX);
+    // Frame ditujukan ke address kita tapi CRC/data rusak => lapor checksum error.
+    if (targetID == SLAVE_ADDRESS) sendError(ERR_CHECKSUM);
     resetBuff();
     return;
   }

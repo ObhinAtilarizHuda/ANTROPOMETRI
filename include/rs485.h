@@ -13,7 +13,7 @@ extern uint8_t HdrOperation[8];    // D5 AA 05 89 [ADDR] 02 00 02
 extern uint8_t HdrTare[8];         // D5 AA 05 89 [ADDR] 02 00 03
 extern uint8_t HdrRestart[8];      // D5 AA 05 89 [ADDR] 02 00 04
 extern uint8_t HdrCancel[8];       // D5 AA 05 89 [ADDR] 02 00 05
-extern uint8_t HdrFbError[8];      // D5 AA 05 89 [ADDR] 02 00 99
+extern uint8_t HdrError[8];        // D5 AA 05 89 [ADDR] 03 00 [CODE] — frame error
 
 // Receive buffer & parsed fields
 extern uint8_t buf[MAX_PACKET];
@@ -27,6 +27,7 @@ extern uint8_t targetID;
 void     init485();
 void     read485();
 void     sendRS485(uint8_t *hdr, uint8_t hdrLen, uint8_t *data, uint16_t dataLen);
+void     sendError(uint8_t code);   // kirim frame error CMD 0x03: D5 AA 05 89 [ADDR] 03 00 [code]
 void     resetBuff();
 void     pack16(uint8_t *dest, uint16_t value);
 void     pack24(uint8_t *dest, uint32_t value);

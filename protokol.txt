@@ -24,6 +24,7 @@ Hanya frame dengan address 0x06 yang diproses
 5. Command (1 byte)
 0x00 - Length measurement request
 0x02 - Control commands
+0x03 - Error report (slave -> master saja, tidak pernah diminta master)
 6. Data (Variable)
 Tergantung command type
 7. CRC (2 bytes)
@@ -80,13 +81,19 @@ Length = 8.3 cm
 Encoded = 830 (0x00033E)
 Bytes = [0x00, 0x03, 0x3E]
 
-Syarat: State harus Operation. Jika Standby, slave membalas Error.
+Syarat:
+- State harus Operation. Jika Standby -> ERR_CHECKSUM.
+- Reserved byte setelah CMD harus 0x00. Jika bukan -> ERR_CHECKSUM.
+- AS5600 harus terkoneksi. Jika tidak -> ERR_SENSOR_NO_RESPONSE.
+- Posisi harus sudah ter-tare (distance < TARE_ZERO_TOL_CM, default 0.5 cm).
+  Jika belum tare -> ERR_TARE_INVALID.
 
-Error — AS5600 tidak terkoneksi:
-Jika sensor AS5600 tidak terdeteksi saat menerima CMD 0x00, slave langsung
-membalas dengan error frame (lihat "Error Responses" di bawah) dan tidak
-masuk mode armed. Selama mode armed aktif, jika sensor terputus saat polling,
-slave mengirim error yang sama dan membatalkan mode armed.
+Semua kondisi gagal di atas dibalas lewat frame CMD 0x03 (lihat "CMD 0x03:
+Error Reporting" di bawah), dan slave tidak masuk mode armed.
+
+Selama mode armed aktif, jika sensor terputus saat polling, slave mengirim
+ERR_SENSOR_NO_RESPONSE dan membatalkan mode armed. Jika 60 detik tanpa klik
+tombol, slave mengirim ERR_TIMEOUT.
 
 CMD 0x02: Control Commands
 Request (Master to Slave)
@@ -114,14 +121,31 @@ Tare bisa slave-initiated: selain sebagai ACK atas perintah master, frame
 Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik)
 walaupun master tidak memintanya.
 
-Error Responses
-D5 AA 05 89 06 02 00 99 [CRC_H] [CRC_L]
-Dikirim slave pada kondisi:
-- SUBCMD tidak dikenal (selain 0x01-0x05)
-- Master kirim CMD 0x00 saat state Standby
-- AS5600 tidak terdeteksi saat menerima CMD 0x00
-- AS5600 terputus saat mode armed measurement aktif
-- Timeout 60 detik tanpa klik tombol setelah CMD 0x00
+SUBCMD selain 0x01-0x05 dibalas ERR_CHECKSUM lewat frame CMD 0x03 (lihat di
+bawah), bukan lagi lewat CMD 0x02.
+
+CMD 0x03: Error Reporting
+Frame ini hanya dikirim slave -> master (slave-initiated), tidak pernah
+diminta lewat request khusus dari master.
+
+D5 AA 05 89 06 03 00 [CODE] [CRC_H] [CRC_L]
+Fields:
+- Length: 0x05 (5 bytes: REQ+ADDR+CMD+reserved+CODE)
+- Reserved: 0x00 (byte tetap setelah CMD, sebelum CODE)
+- CODE: kode error
+
+CODE   Nama                     Kondisi pemicu
+0x01   ERR_TIMEOUT              Mode armed measurement aktif tapi tombol
+                                 tidak diklik dalam 60 detik
+0x02   ERR_CHECKSUM             CRC mismatch pada frame ke address kita,
+                                 atau data request tidak valid (reserved
+                                 byte salah, SUBCMD/cmdType tidak dikenal,
+                                 measurement diminta saat Standby)
+0x03   ERR_SENSOR_NO_RESPONSE   AS5600 tidak terkoneksi saat master minta
+                                 measurement, atau terputus saat armed
+0x04   ERR_TARE_INVALID         Master minta measurement tapi posisi belum
+                                 ter-tare (distance >= 0.5 cm, lihat
+                                 TARE_ZERO_TOL_CM di config.h)
 
 Contoh Frame (CRC terverifikasi terhadap implementasi crc16_modbus di atas)
 Standby   req: D5 AA 04 88 06 02 01 06 7D   | ack: D5 AA 05 89 06 02 00 01 60 3A
@@ -130,7 +154,10 @@ Tare      req: D5 AA 04 88 06 02 03 C7 FC   | ack: D5 AA 05 89 06 02 00 03 A1 BB
 Restart   req: D5 AA 04 88 06 02 04 05 BD   | ack: D5 AA 05 89 06 02 00 04 63 FA
 Cancel    req: D5 AA 04 88 06 02 05 C5 7C   | ack: D5 AA 05 89 06 02 00 05 A3 3B
 Measurement req: D5 AA 04 88 06 00 00 A6 BD
-Error ack (SUBCMD tidak dikenal / AS5600 gagal / timeout): D5 AA 05 89 06 02 00 99 CA 3B
+ERR_TIMEOUT:            D5 AA 05 89 06 03 00 01 A0 6B
+ERR_CHECKSUM:            D5 AA 05 89 06 03 00 02 A1 2B
+ERR_SENSOR_NO_RESPONSE:  D5 AA 05 89 06 03 00 03 61 EA
+ERR_TARE_INVALID:        D5 AA 05 89 06 03 00 04 A3 AB
 
 Detail lengkap (state machine, gesture tombol, buzzer, kalibrasi getDistance)
 lihat README.md.

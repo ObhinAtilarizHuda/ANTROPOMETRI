@@ -98,6 +98,7 @@ Tare `CMD 0x02` SUBCMD `0x03` dieksekusi **langsung**: begitu master meminta tar
 |-----|---------|-------------|
 | `0x00` Measurement | `handleMeasurement()` → `loopMeasurement()` | Armed → klik → kirim jarak (cm×100) + angle adjust (deg×100) |
 | `0x02` Control | `handleMode()` | Standby / Operation / Tare (langsung) / Restart / Cancel |
+| `0x03` Error | `sendError()` (dipanggil dari berbagai handler) | Slave-initiated: `ERR_TIMEOUT` / `ERR_CHECKSUM` / `ERR_SENSOR_NO_RESPONSE` / `ERR_TARE_INVALID` |
 
 ---
 
@@ -118,7 +119,7 @@ Tare `CMD 0x02` SUBCMD `0x03` dieksekusi **langsung**: begitu master meminta tar
 | Length | 1 byte | `Length = 3 (REQ+ADDR+CMD) + Data_Length` |
 | REQ | 1 byte | `0x88` = request (master → slave), `0x89` = response (slave → master) |
 | Address | 1 byte | `0x06` — slave address. Hanya frame dengan address `0x06` yang diproses |
-| Command | 1 byte | `0x00` measurement, `0x02` control |
+| Command | 1 byte | `0x00` measurement, `0x02` control, `0x03` error report (slave → master saja) |
 | Data | n byte | Tergantung command type |
 | CRC | 2 byte | Modbus CRC-16 (poly `0xA001`, init `0xFFFF`), big-endian (MSB first) |
 
@@ -166,17 +167,15 @@ Contoh: panjang = 8.3 cm → encoded = 830 (`0x00033E`) → bytes = `00 03 3E`
 
 Contoh: angle adjust = 220.1° → encoded = 22010 (`0x0055FA`) → bytes = `00 55 FA`
 
-**Syarat:** State harus `Operation`. Jika `Standby`, encoder membalas Error.
+**Syarat:**
+- State harus `Operation`. Jika `Standby` → `ERR_CHECKSUM`.
+- Reserved byte setelah CMD harus `0x00`. Jika bukan → `ERR_CHECKSUM`.
+- AS5600 harus terkoneksi. Jika tidak → `ERR_SENSOR_NO_RESPONSE`.
+- Posisi saat ini harus sudah ter-tare (distance `< TARE_ZERO_TOL_CM`, default **0.5 cm**). Jika belum tare (alat diputar tapi belum di-tare ulang) → `ERR_TARE_INVALID`.
 
-**Error — AS5600 tidak terkoneksi:**
+Semua kondisi gagal di atas dibalas lewat **frame error CMD `0x03`** (lihat [CMD 0x03 — Error Reporting](#cmd-0x03--error-reporting) di bawah), dan slave **tidak masuk mode armed**.
 
-Jika sensor AS5600 tidak terdeteksi saat menerima CMD `0x00`, slave langsung membalas dengan error frame (CMD `0x02`, SUBCMD `0x99`) dan **tidak masuk mode armed**:
-
-```
-D5 AA 05 89 06 02 00 99 CA 3B
-```
-
-Selama mode armed aktif (`measurementRequested = true`), jika sensor terputus saat polling encoder, slave mengirim error yang sama dan **membatalkan mode armed**. Master harus mengirim ulang CMD `0x00` setelah sensor kembali terhubung.
+Selama mode armed aktif (`measurementRequested = true`), jika sensor terputus saat polling encoder, slave mengirim `ERR_SENSOR_NO_RESPONSE` dan **membatalkan mode armed**. Jika 60 detik tanpa klik tombol, slave mengirim `ERR_TIMEOUT`. Master harus mengirim ulang CMD `0x00` untuk mencoba lagi.
 
 ---
 
@@ -209,9 +208,42 @@ Byte `00` setelah CMD adalah reserved, lalu diikuti echo SUBCMD.
 | Tare | `D5 AA 05 89 06 02 00 03 A1 BB` | dikirim langsung setelah tare; frame sama juga dikirim saat user tahan tombol 5 detik |
 | Restart | `D5 AA 05 89 06 02 00 04 63 FA` | dikirim sebelum reboot |
 | Cancel | `D5 AA 05 89 06 02 00 05 A3 3B` | dikirim langsung |
-| Error | `D5 AA 05 89 06 02 00 99 CA 3B` | lihat tabel kondisi Error |
 
 > **Tare bisa slave-initiated:** selain sebagai ACK atas perintah master, frame Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik) walaupun master tidak memintanya.
+
+> SUBCMD selain `0x01`–`0x05` dibalas `ERR_CHECKSUM` lewat frame CMD `0x03` (lihat bawah), bukan lagi lewat CMD `0x02`.
+
+---
+
+### CMD `0x03` — Error Reporting
+
+Frame ini **hanya dikirim slave → master** (slave-initiated), tidak pernah diminta master. Formatnya sama seperti ACK control, hanya CMD-nya `0x03`:
+
+```
+D5 AA 05 89 06 03 00 [CODE] [CRC_H] [CRC_L]
+```
+
+| Field | Ukuran | Keterangan |
+|-------|--------|------------|
+| Length | 1 byte | `0x05` (5 bytes: REQ+ADDR+CMD+reserved+CODE) |
+| Reserved | 1 byte | `0x00` (tetap, sebelum CODE) |
+| CODE | 1 byte | Kode error, lihat tabel di bawah |
+
+| CODE | Nama | Kondisi pemicu |
+|------|------|-----------------|
+| `0x01` | `ERR_TIMEOUT` | Mode armed measurement aktif tapi tombol tidak diklik dalam 60 detik |
+| `0x02` | `ERR_CHECKSUM` | CRC mismatch pada frame ke address kita, atau data request tidak valid (reserved byte salah, SUBCMD tidak dikenal, `cmdType` tidak dikenal, measurement diminta saat `Standby`) |
+| `0x03` | `ERR_SENSOR_NO_RESPONSE` | AS5600 tidak terkoneksi saat master minta measurement (CMD `0x00`), atau terputus selama mode armed |
+| `0x04` | `ERR_TARE_INVALID` | Master minta measurement (CMD `0x00`) tapi posisi belum ter-tare — distance saat ini `≥ 0.5 cm` (`TARE_ZERO_TOL_CM` di [`config.h`](include/config.h)) |
+
+Contoh frame lengkap (CRC terverifikasi):
+
+| Error | Frame |
+|-------|-------|
+| `ERR_TIMEOUT` | `D5 AA 05 89 06 03 00 01 A0 6B` |
+| `ERR_CHECKSUM` | `D5 AA 05 89 06 03 00 02 A1 2B` |
+| `ERR_SENSOR_NO_RESPONSE` | `D5 AA 05 89 06 03 00 03 61 EA` |
+| `ERR_TARE_INVALID` | `D5 AA 05 89 06 03 00 04 A3 AB` |
 
 ---
 
@@ -317,28 +349,44 @@ D5 AA 05 89 06 02 00 05 A3 3B
 
 Cancel tetap di-ACK meskipun tidak ada armed mode aktif (no-op).
 
-### Error
+### Error (CMD `0x03`)
 
-Error frame `CMD 0x02` SUBCMD `0x99` dikirim slave pada kondisi berikut:
+Frame error **slave-initiated** — dikirim kapan saja slave mendeteksi kondisi gagal, tidak diminta lewat request khusus dari master. Lihat [CMD 0x03 — Error Reporting](#cmd-0x03--error-reporting) untuk daftar lengkap kode.
 
-| Kondisi | Pemicu |
-|---------|--------|
-| SUBCMD tidak dikenal | Master kirim `CMD 0x02` dengan SUBCMD selain `0x01`–`0x05` |
-| Measurement saat Standby | Master kirim `CMD 0x00` padahal state `Standby` |
-| AS5600 tidak terdeteksi | Master kirim `CMD 0x00`, sensor tidak merespons I2C |
-| AS5600 terputus saat armed | Sensor terputus selama mode armed measurement aktif |
-| Timeout measurement | 60 detik tanpa klik tombol setelah CMD `0x00` |
+Contoh — master minta measurement tapi AS5600 tidak terdeteksi:
 
-Contoh — master kirim SUBCMD tidak dikenal:
+Master mengirim:
+
+```
+D5 AA 04 88 06 00 00 A6 BD
+```
+
+Slave menjawab (`ERR_SENSOR_NO_RESPONSE`):
+
+```
+D5 AA 05 89 06 03 00 03 61 EA
+```
+
+Contoh — master minta measurement tapi alat belum di-tare (distance masih ≥ 0.5 cm):
+
+Slave menjawab (`ERR_TARE_INVALID`):
+
+```
+D5 AA 05 89 06 03 00 04 A3 AB
+```
+
+Contoh — master kirim `CMD 0x02` dengan SUBCMD tidak dikenal:
+
+Master mengirim:
 
 ```
 D5 AA 04 88 06 02 FF 86 FC
 ```
 
-Slave menjawab:
+Slave menjawab (`ERR_CHECKSUM`):
 
 ```
-D5 AA 05 89 06 02 00 99 CA 3B
+D5 AA 05 89 06 03 00 02 A1 2B
 ```
 
 ---
@@ -372,17 +420,23 @@ Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output b
               ▼
          [Operation]
               │
-              ├── CMD 00 ──► AS5600 OK ──► Armed measurement (Serial monitor), tunggu klik
-              │                           │
-              │                           ├── klik ──► Kirim 1 paket STATUS 0x000064 + beep 1×, idle
-              │                           ├── 60 detik tanpa tombol ──► Error (SUB 0x99)
-              │                           └── AS5600 FAIL/terputus ──► Error (SUB 0x99)
+              ├── CMD 00 ──► reserved OK, AS5600 OK, sudah tare ──► Armed measurement (Serial monitor), tunggu klik
+              │      │                                              │
+              │      │                                              ├── klik ──► Kirim 1 paket STATUS 0x000064 + beep 1×, idle
+              │      │                                              ├── 60 detik tanpa tombol ──► ERR_TIMEOUT (CMD 03)
+              │      │                                              └── AS5600 FAIL/terputus ──► ERR_SENSOR_NO_RESPONSE (CMD 03)
+              │      ├── reserved ≠ 0x00 ──► ERR_CHECKSUM (CMD 03)
+              │      ├── AS5600 tidak terkoneksi ──► ERR_SENSOR_NO_RESPONSE (CMD 03)
+              │      ├── belum tare (dist ≥ 0.5 cm) ──► ERR_TARE_INVALID (CMD 03)
+              │      └── state == Standby ──► ERR_CHECKSUM (CMD 03)
               │
               └── CMD 02 SUBCMD 0x03 ──► Tare langsung + ACK Tare + beep 3×
 
          Tahan tombol 5 detik (kapan saja) ──► Tare + frame Tare ke master + beep 3×
          CMD 02 SUBCMD 0x04 ──► Restart (dari state apapun)
          CMD 02 SUBCMD 0x05 ──► Cancel armed measurement, hanya ACK Cancel
+         CMD 02 SUBCMD tidak dikenal ──► ERR_CHECKSUM (CMD 03)
+         Frame ke address kita dengan CRC mismatch ──► ERR_CHECKSUM (CMD 03)
 ```
 
 State awal saat boot: **Operation**.
@@ -419,3 +473,10 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → slave **langsung** tare, buzzer beep 3×, lalu kirim ACK `D5 AA 05 89 06 02 00 03 A1 BB`. (Atau **tahan tombol 5 detik** kapan saja → slave tare + kirim frame Tare yang sama tanpa diminta master)
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot
+
+**Menguji Error (CMD `0x03`):**
+
+- Kirim **Measurement** tanpa tare dulu (putar encoder dulu, jangan tare) → slave balas `ERR_TARE_INVALID` (`D5 AA 05 89 06 03 00 04 A3 AB`)
+- Cabut AS5600 lalu kirim **Measurement** → slave balas `ERR_SENSOR_NO_RESPONSE` (`D5 AA 05 89 06 03 00 03 61 EA`)
+- Kirim **Measurement** lalu jangan klik tombol 60 detik → slave balas `ERR_TIMEOUT` (`D5 AA 05 89 06 03 00 01 A0 6B`)
+- Kirim `CMD 0x02` dengan SUBCMD tidak dikenal (mis. `D5 AA 04 88 06 02 FF 86 FC`) → slave balas `ERR_CHECKSUM` (`D5 AA 05 89 06 03 00 02 A1 2B`)

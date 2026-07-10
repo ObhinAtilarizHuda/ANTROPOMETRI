@@ -64,7 +64,7 @@ static void feedbackOperation() { sendRS485(HdrOperation, sizeof(HdrOperation), 
 static void feedbackTare()      { sendRS485(HdrTare,      sizeof(HdrTare),      nullptr, 0); Serial.println("[FB] Tare ack"); }
 static void feedbackRestart()   { sendRS485(HdrRestart,   sizeof(HdrRestart),   nullptr, 0); Serial.println("[FB] Restart ack"); }
 static void feedbackCancel()    { sendRS485(HdrCancel,    sizeof(HdrCancel),    nullptr, 0); Serial.println("[FB] Cancel ack"); }
-static void feedbackError()     { sendRS485(HdrFbError,   sizeof(HdrFbError),   nullptr, 0); Serial.println("[FB] Error ack"); }
+static void feedbackError(uint8_t code) { sendError(code); }   // frame CMD 0x03 + kode error
 
 // --- Actions ---
 
@@ -104,15 +104,23 @@ static bool readEncoder(float &lengthCm, float &angleDeg) {
 }
 
 static void handleMeasurement() {
-  if (data1 != 0x00) {
+  if (data1 != 0x00) {               // reserved byte harus 0x00
     Serial.printf("[CMD 0x00] reserved tidak valid: 0x%02X\n", data1);
-    feedbackError();
+    feedbackError(ERR_CHECKSUM);
     return;
   }
 
-  if (!as5600.isConnected()) {
+  float curLen, curAng;
+  if (!readEncoder(curLen, curAng)) {          // readEncoder cek isConnected()
     Serial.println("[CMD 0x00] AS5600 tidak terkoneksi");
-    feedbackError();
+    feedbackError(ERR_SENSOR_NO_RESPONSE);
+    return;
+  }
+
+  // Belum tare: posisi harus ~0 saat master minta measurement (user lupa tare).
+  if (curLen >= TARE_ZERO_TOL_CM) {
+    Serial.printf("[CMD 0x00] Belum tare (dist=%.2f cm >= %.2f) — tolak\n", curLen, TARE_ZERO_TOL_CM);
+    feedbackError(ERR_TARE_INVALID);
     return;
   }
 
@@ -130,7 +138,7 @@ void loopMeasurement() {
   // Inactivity timeout: 1 menit tanpa tombol
   if (millis() - measurementStartMs >= INACTIVITY_TIMEOUT_MS) {
     Serial.println("[TIMEOUT] 1 min no button, measurement cancelled");
-    feedbackError();
+    feedbackError(ERR_TIMEOUT);
     measurementRequested = false;
     return;
   }
@@ -140,7 +148,7 @@ void loopMeasurement() {
     measurementRequested = false;
     float lengthCm, angleAdj;
     if (!readEncoder(lengthCm, angleAdj)) {
-      feedbackError();
+      feedbackError(ERR_SENSOR_NO_RESPONSE);
       return;
     }
     feedbackMeasure(lengthCm, angleAdj, 100);
@@ -155,7 +163,7 @@ void loopMeasurement() {
 
   float lengthCm, angleAdj;
   if (!readEncoder(lengthCm, angleAdj)) {
-    feedbackError();
+    feedbackError(ERR_SENSOR_NO_RESPONSE);
     measurementRequested = false;
     return;
   }
@@ -213,9 +221,9 @@ static void handleMode() {
       feedbackCancel();
       break;
 
-    default:
+    default:    // subcommand control tidak dikenal
       Serial.printf("data1 tidak dikenal: 0x%02X\n", data1);
-      feedbackError();
+      feedbackError(ERR_CHECKSUM);
       break;
   }
 }
@@ -224,16 +232,16 @@ void handleCmd() {
   switch (cmdType) {
     case 0x00:    // Measurement
       if (state == Operation) handleMeasurement();
-      else                    feedbackError();
+      else                    feedbackError(ERR_CHECKSUM);   // request measurement saat Standby
       break;
 
     case 0x02:    // Control
       handleMode();
       break;
 
-    default:
+    default:      // cmdType tidak dikenal
       Serial.printf("cmdType tidak dikenal: 0x%02X\n", cmdType);
-      feedbackError();
+      feedbackError(ERR_CHECKSUM);
       break;
   }
   resetBuff();
