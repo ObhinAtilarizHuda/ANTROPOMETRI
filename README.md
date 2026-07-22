@@ -41,7 +41,7 @@ Dipilih saat compile lewat `#define RS485_MODE` di [`config.h`](include/config.h
 | Nilai | Mode | Perilaku |
 |-------|------|----------|
 | `1` | **RS485** (operasi normal) | Berkomunikasi dengan master via RS485. Tombol & buzzer mengikuti flow handshake. |
-| `0` | **Test sensor** | Tidak ada RS485. Membaca AS5600 dan mencetak `Degree \| Degree Adjust \| Distance` ke Serial Monitor. Klik tombol = Tare. |
+| `0` | **Test sensor** | Tidak ada RS485. Membaca AS5600 dan mencetak `Degree \| Degree Adjust \| Distance` ke Serial Monitor. Klik tombol = Tare (bila pita home). |
 
 ---
 
@@ -52,10 +52,10 @@ Tombol di-polling dengan debounce (modul [`button.cpp`](src/button.cpp)). Gestur
 | Mode | Gesture | Aksi |
 |------|---------|------|
 | RS485 | **Klik sekali** | Kirim 1 paket measurement ke master (hanya saat sudah di-arm CMD `0x00`) |
-| RS485 | **Tahan 5 detik** | Tare lokal + lapor ke master (inisiatif user, kapan saja) |
-| Test | **Klik sekali** | Tare lokal |
+| RS485 | **Tahan 5 detik** | Tare lokal + lapor ke master (inisiatif user, kapan saja; hanya diterima bila pita sudah home) |
+| Test | **Klik sekali** | Tare lokal (hanya diterima bila pita sudah home) |
 
-> Di mode RS485, measurement tetap harus di-arm master (CMD `0x00`) dulu — klik tanpa arm diabaikan. **Tare berbeda:** user boleh menahan tombol 5 detik kapan saja untuk tare + lapor ke master, walau master tidak meminta.
+> Di mode RS485, measurement tetap harus di-arm master (CMD `0x00`) dulu — klik tanpa arm diabaikan. **Tare berbeda:** user boleh menahan tombol 5 detik kapan saja untuk tare + lapor ke master, walau master tidak meminta. **Penjaga home:** semua tare (perintah master, tahan tombol, klik di mode Test) hanya diterima bila pita sudah kembali home — jarak posisi sekarang ke nol-sesi (`sessionZeroRaw`, di-capture saat boot) `< TARE_HOME_TOL_CM` (default **5 cm**). Bila belum home → `ERR_TARE_INVALID` + beep panjang, tare dibatalkan.
 
 Buzzer (active, GPIO5) dikontrol non-blocking (modul [`buzzer.cpp`](src/buzzer.cpp)):
 
@@ -64,8 +64,9 @@ Buzzer (active, GPIO5) dikontrol non-blocking (modul [`buzzer.cpp`](src/buzzer.c
 | Measurement terkirim ke master (klik) | 1× beep 200 ms (`MEASURE_BEEP_MS`) |
 | Tare (perintah master / tahan 5 detik) | **3× beep** 200 ms (`TARE_BEEP_COUNT` × `TARE_BEEP_MS`) |
 | Tare di mode Test (klik) | 1× beep 200 ms (`TARE_BEEP_MS`) |
+| Tare **ditolak** (pita belum home) | 1× beep panjang **800 ms** (`TARE_INVALID_BEEP_MS`) |
 
-Parameter timing tombol & buzzer ada di [`config.h`](include/config.h): `TARE_HOLD_MS` (5000), `BTN_DEBOUNCE_MS` (30), `MEASURE_BEEP_MS`, `TARE_BEEP_MS`, `TARE_BEEP_COUNT`.
+Parameter timing tombol & buzzer ada di [`config.h`](include/config.h): `TARE_HOLD_MS` (5000), `BTN_DEBOUNCE_MS` (30), `MEASURE_BEEP_MS`, `TARE_BEEP_MS`, `TARE_BEEP_COUNT`, `TARE_INVALID_BEEP_MS`.
 
 ---
 
@@ -86,18 +87,18 @@ src/
 
 ## Status Saat Ini
 
-Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **tiga nilai**: jarak (`cm × 100`), sudut adjust (`deg × 100`), dan status tombol (`× 100`) — masing-masing 3 byte big-endian. Nilai dibulatkan ke 1 angka di belakang koma sebelum dikirim (misal 8.28 → 8.3 → encoded 830).
+Measurement `CMD 0x00` membaca posisi kumulatif AS5600, menghitung delta dari titik tare, mengubahnya ke derajat (angle adjust), lalu mengonversinya ke panjang melalui fungsi kalibrasi `getDistance()` di [`encoder.cpp`](src/encoder.cpp). Reply mengirim **tiga nilai**: jarak untuk master (`(hasil internal + 6.5 cm) × 100`), sudut adjust (`deg × 100`), dan status tombol (`× 100`) — masing-masing 3 byte big-endian. Nilai internal tetap hasil asli `getDistance()`; offset 6.5 cm hanya dipakai saat packing DIST ke RS485.
 
 `getDistance()` memakai kalibrasi piecewise-linear (6 segmen). Hasil di luar rentang kalibrasi di-clamp: nilai negatif (di sekitar titik tare) dibulatkan ke **0 cm**, dan nilai di atas ujung rentang kalibrasi ditahan di **150 cm** (bukan ekstrapolasi maupun jatuh ke 0).
 
-Setelah menerima CMD `0x00`, slave **tidak langsung mengirim apa-apa ke master** — slave masuk mode "armed": membaca AS5600 terus-menerus dan mencetak perubahan ke Serial monitor untuk debugging, sambil menunggu **klik tombol**. Saat tombol diklik, slave mengirim **satu paket measurement** ke master dengan STATUS `0x000064` lalu kembali idle, dan buzzer beep 1× 200 ms. Mode armed dibatalkan tanpa kirim paket jika: master mengirim Cancel (CMD `0x02` SUBCMD `0x05`), masuk Standby, atau timeout 60 detik tanpa tombol (slave kirim Error frame).
+Setelah menerima CMD `0x00`, slave **tidak langsung mengirim apa-apa ke master** — slave masuk mode "armed": membaca AS5600 terus-menerus dan mencetak perubahan ke Serial monitor untuk debugging, sambil menunggu **klik tombol**. Saat tombol diklik, slave mengirim **satu paket measurement** ke master dengan STATUS `0x000064` lalu kembali idle, dan buzzer beep 1× 200 ms. Mode armed dibatalkan tanpa kirim paket jika: master mengirim Cancel (CMD `0x02` SUBCMD `0x05`), masuk Standby, atau timeout 60 detik tanpa tombol (slave kirim Error frame). Posisi pita saat request diterima **bebas** — boleh "request dulu baru pita ditarik" maupun "pita ditarik dulu baru request"; nilai internal selalu posisi pita saat tombol diklik, sedangkan DIST yang diterima master adalah nilai internal + 6.5 cm.
 
-Tare `CMD 0x02` SUBCMD `0x03` dieksekusi **langsung**: begitu master meminta tare, slave menjalankan tare, mengirim ACK Tare ke master, dan membunyikan buzzer **3× 200 ms**. Selain itu, user dapat memicu tare **kapan saja** dengan **menahan tombol 5 detik** — slave melakukan tare lalu mengirim frame Tare ke master sebagai laporan (walaupun master tidak memintanya).
+Tare `CMD 0x02` SUBCMD `0x03` dijaga **penjaga home**: begitu master meminta tare, slave memeriksa dulu jarak posisi sekarang terhadap **nol-sesi** (`sessionZeroRaw`, raw kumulatif yang di-capture sekali saat boot dan tidak digeser tare). Bila `< TARE_HOME_TOL_CM` (default **5 cm**), slave menjalankan tare, mengirim ACK Tare, dan membunyikan buzzer **3× 200 ms**. Bila belum home, slave mengirim `ERR_TARE_INVALID` + beep panjang **800 ms** dan tare **dibatalkan**. Aturan yang sama berlaku untuk tare **inisiatif user** (tahan tombol **5 detik**, kapan saja tanpa perintah master) — bila lolos, slave tare lalu mengirim frame Tare ke master sebagai laporan.
 
 | CMD | Handler | Keterangan |
 |-----|---------|-------------|
-| `0x00` Measurement | `handleMeasurement()` → `loopMeasurement()` | Armed → klik → kirim jarak (cm×100) + angle adjust (deg×100) |
-| `0x02` Control | `handleMode()` | Standby / Operation / Tare (langsung) / Restart / Cancel |
+| `0x00` Measurement | `handleMeasurement()` → `loopMeasurement()` | Armed → klik → kirim jarak `(internal + 6.5 cm)×100` + angle adjust (deg×100) |
+| `0x02` Control | `handleMode()` | Standby / Operation / Tare (dengan penjaga home) / Restart / Cancel |
 | `0x03` Error | `sendError()` (dipanggil dari berbagai handler) | Slave-initiated: `ERR_TIMEOUT` / `ERR_CHECKSUM` / `ERR_SENSOR_NO_RESPONSE` / `ERR_TARE_INVALID` |
 
 ---
@@ -146,7 +147,7 @@ D5 AA 0C 89 06 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [STAT_H STAT_
 | Field | Ukuran | Keterangan |
 |-------|--------|------------|
 | Length | 1 byte | `0x0C` (12 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle+3 byte status) |
-| DIST | 3 byte | Jarak/panjang (`cm × 100`, dibulatkan 1 desimal) — 24-bit signed integer big-endian |
+| DIST | 3 byte | Jarak/panjang yang diterima master (`(hasil internal + 6.5 cm) × 100`, dibulatkan 1 desimal) — 24-bit signed integer big-endian |
 | ANGLE | 3 byte | Sudut adjust (`deg × 100`, dibulatkan 1 desimal) — 24-bit signed integer big-endian |
 | STATUS | 3 byte | Status tombol (`× 100`) — selalu `0x000064` karena slave hanya mengirim saat tombol diklik |
 
@@ -154,7 +155,7 @@ D5 AA 0C 89 06 00 [DIST_H DIST_M DIST_L] [ANGLE_H ANGLE_M ANGLE_L] [STAT_H STAT_
 
 ```c
 int32_t length_cm_x100  = (int32_t)((DIST_H  << 16) | (DIST_M  << 8) | DIST_L);
-float   length_cm       = length_cm_x100 / 100.0f;  // 1 decimal place
+float   length_cm       = length_cm_x100 / 100.0f;  // sudah termasuk offset +6.5 cm
 
 int32_t angle_deg_x100  = (int32_t)((ANGLE_H << 16) | (ANGLE_M << 8) | ANGLE_L);
 float   angle_deg       = angle_deg_x100 / 100.0f;  // 1 decimal place
@@ -163,7 +164,7 @@ int32_t status_x100     = (int32_t)((STAT_H  << 16) | (STAT_M  << 8) | STAT_L);
 // status_x100 == 100 → tombol diklik (single send, slave-triggered)
 ```
 
-Contoh: panjang = 8.3 cm → encoded = 830 (`0x00033E`) → bytes = `00 03 3E`
+Contoh: panjang internal = 8.3 cm → dikirim ke master = 14.8 cm → encoded = 1480 (`0x0005C8`) → bytes = `00 05 C8`
 
 Contoh: angle adjust = 220.1° → encoded = 22010 (`0x0055FA`) → bytes = `00 55 FA`
 
@@ -171,7 +172,7 @@ Contoh: angle adjust = 220.1° → encoded = 22010 (`0x0055FA`) → bytes = `00 
 - State harus `Operation`. Jika `Standby` → `ERR_CHECKSUM`.
 - Reserved byte setelah CMD harus `0x00`. Jika bukan → `ERR_CHECKSUM`.
 - AS5600 harus terkoneksi. Jika tidak → `ERR_SENSOR_NO_RESPONSE`.
-- Posisi saat ini harus sudah ter-tare (distance `< TARE_ZERO_TOL_CM`, default **0.5 cm**). Jika belum tare (alat diputar tapi belum di-tare ulang) → `ERR_TARE_INVALID`.
+- Posisi pita saat request **bebas**: boleh "request dulu baru pita ditarik" maupun "pita ditarik dulu baru request" — dua-duanya valid. Nilai internal selalu posisi pita saat tombol diklik; nilai DIST yang dikirim ke master ditambah offset 6.5 cm.
 
 Semua kondisi gagal di atas dibalas lewat **frame error CMD `0x03`** (lihat [CMD 0x03 — Error Reporting](#cmd-0x03--error-reporting) di bawah), dan slave **tidak masuk mode armed**.
 
@@ -191,7 +192,7 @@ D5 AA 04 88 06 02 [SUBCMD] [CRC_H] [CRC_L]
 |--------|---------|-------------|
 | `0x01` | Standby | Enter low power mode (WiFi/BT off, CPU 80MHz) |
 | `0x02` | Operation | Exit standby / ready |
-| `0x03` | Tare | **Langsung** — tare lalu balas ACK Tare |
+| `0x03` | Tare | Hanya bila pita **home** (jarak ke nol-sesi `< TARE_HOME_TOL_CM`, default **5 cm**) → tare + ACK Tare. Bila belum home → `ERR_TARE_INVALID`, tare batal |
 | `0x04` | Restart | Reboot ESP32 |
 | `0x05` | Cancel | Batalkan armed mode (measurement / tare) tanpa kirim hasil |
 
@@ -205,11 +206,11 @@ Byte `00` setelah CMD adalah reserved, lalu diikuti echo SUBCMD.
 |-----|-------|---------|
 | Standby | `D5 AA 05 89 06 02 00 01 60 3A` | dikirim langsung |
 | Operation | `D5 AA 05 89 06 02 00 02 61 7A` | dikirim langsung |
-| Tare | `D5 AA 05 89 06 02 00 03 A1 BB` | dikirim langsung setelah tare; frame sama juga dikirim saat user tahan tombol 5 detik |
+| Tare | `D5 AA 05 89 06 02 00 03 A1 BB` | dikirim setelah tare diterima (pita home); frame sama juga dikirim saat user tahan tombol 5 detik. Bila pita belum home → `ERR_TARE_INVALID`, bukan ACK ini |
 | Restart | `D5 AA 05 89 06 02 00 04 63 FA` | dikirim sebelum reboot |
 | Cancel | `D5 AA 05 89 06 02 00 05 A3 3B` | dikirim langsung |
 
-> **Tare bisa slave-initiated:** selain sebagai ACK atas perintah master, frame Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik) walaupun master tidak memintanya.
+> **Tare bisa slave-initiated:** selain sebagai ACK atas perintah master, frame Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik) walaupun master tidak memintanya. Tare inisiatif user tunduk pada **penjaga home** yang sama: bila pita belum home, slave mengirim `ERR_TARE_INVALID` (bukan frame Tare) dan tidak melakukan tare.
 
 > SUBCMD selain `0x01`–`0x05` dibalas `ERR_CHECKSUM` lewat frame CMD `0x03` (lihat bawah), bukan lagi lewat CMD `0x02`.
 
@@ -234,7 +235,7 @@ D5 AA 05 89 06 03 00 [CODE] [CRC_H] [CRC_L]
 | `0x01` | `ERR_TIMEOUT` | Mode armed measurement aktif tapi tombol tidak diklik dalam 60 detik |
 | `0x02` | `ERR_CHECKSUM` | CRC mismatch pada frame ke address kita, atau data request tidak valid (reserved byte salah, SUBCMD tidak dikenal, `cmdType` tidak dikenal, measurement diminta saat `Standby`) |
 | `0x03` | `ERR_SENSOR_NO_RESPONSE` | AS5600 tidak terkoneksi saat master minta measurement (CMD `0x00`), atau terputus selama mode armed |
-| `0x04` | `ERR_TARE_INVALID` | Master minta measurement (CMD `0x00`) tapi posisi belum ter-tare — distance saat ini `≥ 0.5 cm` (`TARE_ZERO_TOL_CM` di [`config.h`](include/config.h)) |
+| `0x04` | `ERR_TARE_INVALID` | Permintaan tare (master SUBCMD `0x03`, atau tahan tombol 5 detik) sewaktu pita belum home — jarak ke nol-sesi `≥ 5 cm` (`TARE_HOME_TOL_CM` di [`config.h`](include/config.h)). Tare dibatalkan |
 
 Contoh frame lengkap (CRC terverifikasi):
 
@@ -249,7 +250,7 @@ Contoh frame lengkap (CRC terverifikasi):
 
 ## Contoh Frame Lengkap
 
-CRC ditulis big-endian sebagai `[CRC_H] [CRC_L]`. Nilai measurement bergantung posisi AS5600. Contoh di bawah memakai skenario jarak/panjang = 8.3 cm.
+CRC ditulis big-endian sebagai `[CRC_H] [CRC_L]`. Nilai measurement bergantung posisi AS5600. Contoh di bawah memakai skenario jarak/panjang internal = 8.3 cm, sehingga DIST yang diterima master = 14.8 cm.
 
 ### Measurement
 
@@ -264,12 +265,12 @@ Slave **tidak menjawab langsung** — masuk mode armed dan menunggu **klik tombo
 Saat tombol diklik, slave mengirim satu paket (lalu buzzer beep 1×):
 
 ```
-D5 AA 0C 89 06 00 00 03 3E 00 55 FA 00 00 64 [CRC_H] [CRC_L]
+D5 AA 0C 89 06 00 00 05 C8 00 55 FA 00 00 64 [CRC_H] [CRC_L]
 ```
 
 | Field | Hex | Decimal | Arti |
 |-------|-----|---------|------|
-| DIST | `00 03 3E` | 830 | 8.3 cm (= 830 / 100) |
+| DIST | `00 05 C8` | 1480 | 14.8 cm (= 8.3 cm internal + 6.5 cm) |
 | ANGLE | `00 55 FA` | 22010 | 220.1° (= 22010 / 100) |
 | STATUS | `00 00 64` | 100 | tombol diklik (slave-triggered single send) |
 
@@ -309,13 +310,19 @@ Master mengirim request:
 D5 AA 04 88 06 02 03 C7 FC
 ```
 
-Slave **langsung** melakukan tare, membunyikan buzzer 3×, lalu mengirim ACK:
+Bila pita sudah **home** (jarak ke nol-sesi `< TARE_HOME_TOL_CM`, default 5 cm), slave melakukan tare, membunyikan buzzer 3×, lalu mengirim ACK:
 
 ```
 D5 AA 05 89 06 02 00 03 A1 BB
 ```
 
-**Tare inisiatif user:** user dapat menahan tombol **5 detik** kapan saja (tanpa perintah master). Slave melakukan tare, beep 3×, lalu mengirim frame Tare yang sama (`D5 AA 05 89 06 02 00 03 A1 BB`) ke master sebagai laporan.
+Bila pita **belum home** (masih terjulur ≥ 5 cm), slave **tidak** melakukan tare — membalas `ERR_TARE_INVALID` + beep panjang 800 ms:
+
+```
+D5 AA 05 89 06 03 00 04 A3 AB
+```
+
+**Tare inisiatif user:** user dapat menahan tombol **5 detik** kapan saja (tanpa perintah master). Penjaga home yang sama berlaku: bila lolos, slave tare, beep 3×, lalu mengirim frame Tare yang sama (`D5 AA 05 89 06 02 00 03 A1 BB`) ke master sebagai laporan; bila belum home, slave mengirim `ERR_TARE_INVALID` + beep panjang.
 
 ### Restart
 
@@ -367,7 +374,7 @@ Slave menjawab (`ERR_SENSOR_NO_RESPONSE`):
 D5 AA 05 89 06 03 00 03 61 EA
 ```
 
-Contoh — master minta measurement tapi alat belum di-tare (distance masih ≥ 0.5 cm):
+Contoh — master minta tare tapi pita belum home (jarak ke nol-sesi masih ≥ 5 cm):
 
 Slave menjawab (`ERR_TARE_INVALID`):
 
@@ -420,19 +427,20 @@ Dihitung atas seluruh byte mulai `D5` sampai byte terakhir sebelum CRC. Output b
               ▼
          [Operation]
               │
-              ├── CMD 00 ──► reserved OK, AS5600 OK, sudah tare ──► Armed measurement (Serial monitor), tunggu klik
+              ├── CMD 00 ──► reserved OK, AS5600 OK ──► Armed measurement (posisi pita bebas), tunggu klik
               │      │                                              │
               │      │                                              ├── klik ──► Kirim 1 paket STATUS 0x000064 + beep 1×, idle
               │      │                                              ├── 60 detik tanpa tombol ──► ERR_TIMEOUT (CMD 03)
               │      │                                              └── AS5600 FAIL/terputus ──► ERR_SENSOR_NO_RESPONSE (CMD 03)
               │      ├── reserved ≠ 0x00 ──► ERR_CHECKSUM (CMD 03)
               │      ├── AS5600 tidak terkoneksi ──► ERR_SENSOR_NO_RESPONSE (CMD 03)
-              │      ├── belum tare (dist ≥ 0.5 cm) ──► ERR_TARE_INVALID (CMD 03)
               │      └── state == Standby ──► ERR_CHECKSUM (CMD 03)
               │
-              └── CMD 02 SUBCMD 0x03 ──► Tare langsung + ACK Tare + beep 3×
+              └── CMD 02 SUBCMD 0x03 ──► pita home (< 5 cm dari nol-sesi) ──► Tare + ACK Tare + beep 3×
+                                    └── pita belum home ──► ERR_TARE_INVALID (CMD 03) + beep panjang 800 ms
 
-         Tahan tombol 5 detik (kapan saja) ──► Tare + frame Tare ke master + beep 3×
+         Tahan tombol 5 detik (kapan saja) ──► pita home ──► Tare + frame Tare ke master + beep 3×
+                                          └── pita belum home ──► ERR_TARE_INVALID (CMD 03) + beep panjang 800 ms
          CMD 02 SUBCMD 0x04 ──► Restart (dari state apapun)
          CMD 02 SUBCMD 0x05 ──► Cancel armed measurement, hanya ACK Cancel
          CMD 02 SUBCMD tidak dikenal ──► ERR_CHECKSUM (CMD 03)
@@ -470,13 +478,13 @@ File template: [`simulasiTesting/TestingSImulasi.ptp`](simulasiTesting/TestingSI
 
 1. Kirim **Operation** (`D5 AA 04 88 06 02 02 07 3D`) → ACK `D5 AA 05 89 06 02 00 02 61 7A`
 2. Kirim **Measurement** (`D5 AA 04 88 06 00 00 A6 BD`) → slave **tidak balas**, masuk armed (monitor di Serial). **Klik** tombol → slave kirim 1 paket measurement STATUS `0x000064` + buzzer beep 1×. Alternatif: kirim **Cancel** (`D5 AA 04 88 06 02 05 C5 7C`) → ACK Cancel, armed dibatalkan
-3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) → slave **langsung** tare, buzzer beep 3×, lalu kirim ACK `D5 AA 05 89 06 02 00 03 A1 BB`. (Atau **tahan tombol 5 detik** kapan saja → slave tare + kirim frame Tare yang sama tanpa diminta master)
+3. Kirim **Tare** (`D5 AA 04 88 06 02 03 C7 FC`) saat pita home → slave tare, buzzer beep 3×, lalu kirim ACK `D5 AA 05 89 06 02 00 03 A1 BB`. Bila pita masih terjulur ≥ 5 cm → slave balas `ERR_TARE_INVALID` + beep panjang, tare batal. (Atau **tahan tombol 5 detik** kapan saja → penjaga home yang sama berlaku)
 4. Kirim **Standby** (`D5 AA 04 88 06 02 01 06 7D`) → ACK `D5 AA 05 89 06 02 00 01 60 3A`
 5. Kirim **Restart** (`D5 AA 04 88 06 02 04 05 BD`) → ACK `D5 AA 05 89 06 02 00 04 63 FA`, lalu reboot
 
 **Menguji Error (CMD `0x03`):**
 
-- Kirim **Measurement** tanpa tare dulu (putar encoder dulu, jangan tare) → slave balas `ERR_TARE_INVALID` (`D5 AA 05 89 06 03 00 04 A3 AB`)
+- Kirim **Tare** saat pita masih terjulur ≥ 5 cm dari nol-sesi (putar encoder dulu) → slave balas `ERR_TARE_INVALID` (`D5 AA 05 89 06 03 00 04 A3 AB`), tare tidak dilakukan
 - Cabut AS5600 lalu kirim **Measurement** → slave balas `ERR_SENSOR_NO_RESPONSE` (`D5 AA 05 89 06 03 00 03 61 EA`)
 - Kirim **Measurement** lalu jangan klik tombol 60 detik → slave balas `ERR_TIMEOUT` (`D5 AA 05 89 06 03 00 01 A0 6B`)
 - Kirim `CMD 0x02` dengan SUBCMD tidak dikenal (mis. `D5 AA 04 88 06 02 FF 86 FC`) → slave balas `ERR_CHECKSUM` (`D5 AA 05 89 06 03 00 02 A1 2B`)

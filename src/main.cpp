@@ -26,6 +26,7 @@ void setup() {
   Serial.println(as5600.isConnected());
   delay(500);
   doTare();
+  sessionZeroRaw = startRaw;   // nol-sesi (home fisik) — referensi diam, tak digeser tare berikutnya
 
 #if RS485_MODE
   Serial.println("Device Ready (RS485 Mode)");
@@ -57,9 +58,15 @@ void loop() {
     }
   }
 #else
-  if (takeTareGesture()) {           // sekali klik => tare + beep 200ms
-    doTare();
-    startBeep(TARE_BEEP_MS);
+  if (takeTareGesture()) {           // sekali klik => tare (bila pita home) + beep
+    float d = distFromSessionZero();
+    if (d < TARE_HOME_TOL_CM) {
+      doTare();
+      startBeep(TARE_BEEP_MS);
+    } else {
+      startBeep(TARE_INVALID_BEEP_MS);   // beep panjang: tare ditolak, pita belum home
+      Serial.printf("[TEST][TARE] ditolak — pita belum home (%.1f cm >= %.1f)\n", d, TARE_HOME_TOL_CM);
+    }
   }
   testSensor();   // baca & tampilkan sensor di Serial Monitor
 #endif

@@ -1,7 +1,9 @@
 #include "encoder.h"
+#include "config.h"
 
 AS5600  as5600;
-int32_t startRaw = 0;
+int32_t startRaw       = 0;
+int32_t sessionZeroRaw = 0;
 
 // Kalibrasi jarak piecewise-linear dari posisi encoder (derajat akumulatif)
 float getDistance(float x) {
@@ -20,6 +22,16 @@ float getDistance(float x) {
 void doTare() {
   startRaw = as5600.getCumulativePosition();
   Serial.printf("[TARE] startRaw=%d (degree reset to 0.44)\n", startRaw);
+}
+
+// Jarak (cm) posisi encoder saat ini relatif ke nol-sesi (home fisik saat boot).
+// Dipakai penjaga tare: pita dianggap sudah "home" bila hasilnya < TARE_HOME_TOL_CM.
+// Beda dari readEncoder() yang mengukur dari startRaw (nol tare yang bergeser),
+// fungsi ini selalu mengukur dari sessionZeroRaw yang tetap.
+float distFromSessionZero() {
+  int32_t raw    = as5600.getCumulativePosition();
+  float   degree = (float)(raw - sessionZeroRaw) * 360.0f / 4096.0f;
+  return getDistance(degree + 0.44f);
 }
 
 void pollEncoder() {

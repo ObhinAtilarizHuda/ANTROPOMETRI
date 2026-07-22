@@ -43,6 +43,8 @@
 #define MEASURE_BEEP_MS 200    // durasi beep konfirmasi setelah measurement terkirim ke master (ms)
 #define TARE_BEEP_MS    200    // durasi tiap beep tare (ms)
 #define TARE_BEEP_COUNT 3      // jumlah beep saat tare selesai dibalas ke master (mode RS485)
+#define TARE_INVALID_BEEP_MS 800  // 1 beep panjang: tare ditolak karena pita belum home (ms)
+#define MEASUREMENT_TX_OFFSET_CM 6.5f  // offset hanya untuk jarak measurement yang dikirim ke master
 
 // ─── Error reporting (frame CMD 0x03) ───────────────────────
 // Slave melapor error ke master lewat frame: D5 AA 05 89 [ADDR] 03 00 [CODE] + CRC
@@ -51,8 +53,10 @@
 #define ERR_TIMEOUT            0x01   // measurement di-arm tapi tak ada klik tombol > timeout (1 menit)
 #define ERR_CHECKSUM           0x02   // frame ke address kita: CRC mismatch / data request tidak valid
 #define ERR_SENSOR_NO_RESPONSE 0x03   // AS5600 tidak terkoneksi saat master minta measurement
-#define ERR_TARE_INVALID       0x04   // belum tare: posisi belum ~0 saat master minta measurement
+#define ERR_TARE_INVALID       0x04   // tare ditolak: pita belum kembali home saat diminta tare
 
-// Toleransi "sudah ter-tare": distance dianggap nol bila < nilai ini (cm).
-// Jika master minta measurement tapi distance >= nilai ini => ERR_TARE_INVALID.
-#define TARE_ZERO_TOL_CM  0.5f
+// Penjaga tare: tare hanya diterima bila pita sudah kembali ke posisi home.
+// Diukur sebagai jarak (cm) posisi encoder sekarang terhadap sessionZeroRaw
+// (nol-sesi yang di-capture saat boot). Bila >= nilai ini => ERR_TARE_INVALID
+// dan tare dibatalkan.
+#define TARE_HOME_TOL_CM  5.0f

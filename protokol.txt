@@ -67,26 +67,29 @@ Response (Slave to Master) — dikirim saat tombol diklik
 D5 AA 0C 89 06 00 [DIST_H][DIST_M][DIST_L] [ANGLE_H][ANGLE_M][ANGLE_L] [STAT_H][STAT_M][STAT_L] [CRC_H] [CRC_L]
 Fields:
 - Length : 0x0C (12 bytes: REQ+ADDR+CMD+3 byte dist+3 byte angle+3 byte status)
-- DIST   : jarak/panjang (cm x 100, dibulatkan 1 desimal) — 24-bit signed integer big-endian
+- DIST   : jarak/panjang untuk master ((hasil internal + 6.5 cm) x 100, dibulatkan 1 desimal) — 24-bit signed integer big-endian
 - ANGLE  : sudut adjust (deg x 100, dibulatkan 1 desimal) — 24-bit signed integer big-endian
 - STATUS : status tombol (x 100) — selalu 0x000064 karena slave hanya mengirim saat tombol diklik
 Data Format:
 int32_t length_cm_x100  = (int32_t)((DIST_H  << 16) | (DIST_M  << 8) | DIST_L);
-float   length_cm       = length_cm_x100 / 100.0f;
+float   length_cm       = length_cm_x100 / 100.0f;  // sudah termasuk offset +6.5 cm
 int32_t angle_deg_x100  = (int32_t)((ANGLE_H << 16) | (ANGLE_M << 8) | ANGLE_L);
 float   angle_deg       = angle_deg_x100 / 100.0f;
 int32_t status_x100     = (int32_t)((STAT_H  << 16) | (STAT_M  << 8) | STAT_L);
 Example:
-Length = 8.3 cm
-Encoded = 830 (0x00033E)
-Bytes = [0x00, 0x03, 0x3E]
+Length internal = 8.3 cm
+Length dikirim ke master = 14.8 cm
+Encoded = 1480 (0x0005C8)
+Bytes = [0x00, 0x05, 0xC8]
 
 Syarat:
 - State harus Operation. Jika Standby -> ERR_CHECKSUM.
 - Reserved byte setelah CMD harus 0x00. Jika bukan -> ERR_CHECKSUM.
 - AS5600 harus terkoneksi. Jika tidak -> ERR_SENSOR_NO_RESPONSE.
-- Posisi harus sudah ter-tare (distance < TARE_ZERO_TOL_CM, default 0.5 cm).
-  Jika belum tare -> ERR_TARE_INVALID.
+- Posisi pita saat request BEBAS: boleh "request dulu baru pita ditarik"
+  maupun "pita ditarik dulu baru request" — dua-duanya valid. Nilai internal
+  selalu posisi pita saat tombol diklik; DIST yang dikirim ke master ditambah
+  offset 6.5 cm.
 
 Semua kondisi gagal di atas dibalas lewat frame CMD 0x03 (lihat "CMD 0x03:
 Error Reporting" di bawah), dan slave tidak masuk mode armed.
@@ -106,7 +109,10 @@ Fields:
 SUBCMD      Command         Description
 0x01        Standby         Enter low power mode (WiFi/BT off, CPU 80MHz)
 0x02        Operation       Exit standby / ready
-0x03        Tare            Set current AS5600 position as zero point (langsung, balas ACK Tare)
+0x03        Tare            Set posisi AS5600 sekarang sebagai titik nol. Hanya diterima
+                            bila pita sudah kembali home (jarak ke nol-sesi < TARE_HOME_TOL_CM,
+                            default 5 cm) -> balas ACK Tare. Bila belum home -> ERR_TARE_INVALID
+                            dan tare dibatalkan.
 0x04        Restart         Reboot ESP32
 0x05        Cancel          Batalkan mode armed (measurement/tare) tanpa kirim hasil
 
@@ -119,7 +125,9 @@ Fields:
 
 Tare bisa slave-initiated: selain sebagai ACK atas perintah master, frame
 Tare yang sama juga dikirim slave atas inisiatif user (tahan tombol 5 detik)
-walaupun master tidak memintanya.
+walaupun master tidak memintanya. Tare inisiatif user ini tunduk pada penjaga
+home yang sama: bila pita belum home, slave mengirim ERR_TARE_INVALID (bukan
+frame Tare) dan tidak melakukan tare.
 
 SUBCMD selain 0x01-0x05 dibalas ERR_CHECKSUM lewat frame CMD 0x03 (lihat di
 bawah), bukan lagi lewat CMD 0x02.
@@ -143,9 +151,10 @@ CODE   Nama                     Kondisi pemicu
                                  measurement diminta saat Standby)
 0x03   ERR_SENSOR_NO_RESPONSE   AS5600 tidak terkoneksi saat master minta
                                  measurement, atau terputus saat armed
-0x04   ERR_TARE_INVALID         Master minta measurement tapi posisi belum
-                                 ter-tare (distance >= 0.5 cm, lihat
-                                 TARE_ZERO_TOL_CM di config.h)
+0x04   ERR_TARE_INVALID         Permintaan tare (master SUBCMD 0x03, atau tahan
+                                 tombol 5 detik) sewaktu pita belum home (jarak
+                                 ke nol-sesi >= TARE_HOME_TOL_CM, default 5 cm,
+                                 lihat config.h). Tare dibatalkan.
 
 Contoh Frame (CRC terverifikasi terhadap implementasi crc16_modbus di atas)
 Standby   req: D5 AA 04 88 06 02 01 06 7D   | ack: D5 AA 05 89 06 02 00 01 60 3A

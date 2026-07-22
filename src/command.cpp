@@ -43,11 +43,13 @@ static void exitStandby() {
 
 // --- Feedback helpers ---
 
-// Reply CMD 0x00: distance (cm×100) + angle (deg×100) + statusInt (×100), 3 byte big-endian each.
+// Reply CMD 0x00: distance sent to master = internal distance + MEASUREMENT_TX_OFFSET_CM.
+// Angle and local monitor values stay based on the raw internal measurement.
 // Format: D5 AA 0C 89 [ADDR] 00 [DIST×3 ANGLE×3 STATUS×3] [CRC_H CRC_L]
 static void feedbackMeasure(float lengthCm, float angleDeg, int32_t statusInt) {
-  int32_t lengthInt = (int32_t)(roundf(lengthCm * 10.0f)) * 10;
-  int32_t angleInt  = (int32_t)(roundf(angleDeg  * 10.0f)) * 10;
+  float   txLengthCm = lengthCm + MEASUREMENT_TX_OFFSET_CM;
+  int32_t lengthInt  = (int32_t)(roundf(txLengthCm * 10.0f)) * 10;
+  int32_t angleInt   = (int32_t)(roundf(angleDeg   * 10.0f)) * 10;
 
   uint8_t data[9];
   pack24(data + 0, (uint32_t)lengthInt);
@@ -55,8 +57,8 @@ static void feedbackMeasure(float lengthCm, float angleDeg, int32_t statusInt) {
   pack24(data + 6, (uint32_t)statusInt);
 
   sendRS485(HdrMeasure, sizeof(HdrMeasure), data, sizeof(data));
-  Serial.printf("[FB] Measure: dist=%.2f cm (%d), angle=%.2f deg (%d), status=%d\n",
-                lengthCm, lengthInt, angleDeg, angleInt, statusInt);
+  Serial.printf("[FB] Measure: internal=%.2f cm, tx=%.2f cm (%d), angle=%.2f deg (%d), status=%d\n",
+                lengthCm, txLengthCm, lengthInt, angleDeg, angleInt, statusInt);
 }
 
 static void feedbackStandby()   { sendRS485(HdrStandby,   sizeof(HdrStandby),   nullptr, 0); Serial.println("[FB] Standby ack"); }
@@ -110,20 +112,16 @@ static void handleMeasurement() {
     return;
   }
 
-  float curLen, curAng;
-  if (!readEncoder(curLen, curAng)) {          // readEncoder cek isConnected()
+  if (!as5600.isConnected()) {
     Serial.println("[CMD 0x00] AS5600 tidak terkoneksi");
     feedbackError(ERR_SENSOR_NO_RESPONSE);
     return;
   }
 
-  // Belum tare: posisi harus ~0 saat master minta measurement (user lupa tare).
-  if (curLen >= TARE_ZERO_TOL_CM) {
-    Serial.printf("[CMD 0x00] Belum tare (dist=%.2f cm >= %.2f) — tolak\n", curLen, TARE_ZERO_TOL_CM);
-    feedbackError(ERR_TARE_INVALID);
-    return;
-  }
-
+  // Posisi pita saat request BEBAS: urutan "request dulu baru tarik" maupun
+  // "tarik dulu baru request" sama-sama valid — deltaRaw dari counter kumulatif
+  // benar kapan pun dibaca. Integritas titik nol dijaga di jalur tare
+  // (penjaga TARE_HOME_TOL_CM), bukan di sini.
   clearButtonGestures();             // buang gesture lama agar tidak langsung terkirim
   measurementStartMs  = millis();
   lastSentMs          = millis();
@@ -181,10 +179,17 @@ void loopMeasurement() {
 // di handleMode() case 0x03.
 void loopTare() {
   if (takeTareGesture()) {           // tombol ditahan >= 5 detik
-    doTare();
-    feedbackTare();                  // beritahu master walau tidak diminta
-    startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
-    Serial.println("[TARE] Tahan 5 detik — tare & lapor ke master");
+    float d = distFromSessionZero();
+    if (d < TARE_HOME_TOL_CM) {      // pita sudah home => tare
+      doTare();
+      feedbackTare();                // beritahu master walau tidak diminta
+      startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
+      Serial.printf("[TARE] Tahan 5 detik — pita home (%.1f cm), tare & lapor master\n", d);
+    } else {                         // pita belum home => tolak
+      feedbackError(ERR_TARE_INVALID);
+      startBeep(TARE_INVALID_BEEP_MS);   // 1 beep panjang penanda tolak
+      Serial.printf("[TARE] Tahan 5 detik — ditolak, pita belum home (%.1f cm >= %.1f)\n", d, TARE_HOME_TOL_CM);
+    }
   }
 }
 
@@ -202,12 +207,20 @@ static void handleMode() {
       feedbackOperation();
       break;
 
-    case 0x03:    // Tare: langsung tare & balas ke master
-      Serial.println("Tare requested by master — langsung tare");
-      doTare();
-      feedbackTare();
-      startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
+    case 0x03: {  // Tare: hanya diterima bila pita sudah kembali home
+      float d = distFromSessionZero();
+      if (d < TARE_HOME_TOL_CM) {
+        Serial.printf("Tare requested by master — pita home (%.1f cm), tare\n", d);
+        doTare();
+        feedbackTare();
+        startBeeps(TARE_BEEP_COUNT, TARE_BEEP_MS, TARE_BEEP_MS);   // beep beep beep 3x
+      } else {
+        Serial.printf("Tare ditolak — pita belum home (%.1f cm >= %.1f)\n", d, TARE_HOME_TOL_CM);
+        feedbackError(ERR_TARE_INVALID);
+        startBeep(TARE_INVALID_BEEP_MS);   // 1 beep panjang penanda tolak
+      }
       break;
+    }
 
     case 0x04:    // Restart
       Serial.println("Device Restart");
